@@ -21,6 +21,7 @@
     <nav>
       <a class="active" href="./index.html">Dashboard</a>
       <a href="./admin.html">後台管理</a>
+      <a href="./health.html">健康檢查</a>
     </nav>
   </header>
 
@@ -30,7 +31,16 @@
     <section class="panel">
       <div class="panel-header">
         <h2>服務狀態</h2>
-        <button id="refreshBtn" class="btn">重新整理</button>
+        <div class="row-actions">
+          <label class="inline-field" for="refreshIntervalSelect">自動刷新</label>
+          <select id="refreshIntervalSelect" class="select">
+            <option value="30">30 秒</option>
+            <option value="60" selected>60 秒</option>
+            <option value="120">120 秒</option>
+          </select>
+          <span id="autoRefreshInfo" class="hint">每 60 秒自動更新</span>
+          <button id="refreshBtn" class="btn">重新整理</button>
+        </div>
       </div>
       <div class="table-wrap">
         <table>
@@ -43,11 +53,38 @@
               <th>延遲(ms)</th>
               <th>頻率(分)</th>
               <th>最後檢查</th>
-              <th>查看圖表</th>
+              <th>查看明細</th>
             </tr>
           </thead>
           <tbody id="servicesBody"></tbody>
         </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2 id="historyTitle">每分鐘歷史記錄</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead id="minuteHistoryHead">
+            <tr>
+              <th><button class="th-sort active" data-sort-key="minute" data-sort-type="date">分鐘</button></th>
+              <th><button class="th-sort" data-sort-key="upCount" data-sort-type="number">UP 次數</button></th>
+              <th><button class="th-sort" data-sort-key="downCount" data-sort-type="number">DOWN 次數</button></th>
+              <th><button class="th-sort" data-sort-key="avgLatency" data-sort-type="number">平均延遲(ms)</button></th>
+              <th><button class="th-sort" data-sort-key="lastHttp" data-sort-type="number">最後 HTTP</button></th>
+            </tr>
+          </thead>
+          <tbody id="minuteHistoryBody"></tbody>
+        </table>
+      </div>
+      <div class="history-footer">
+        <span id="historyPageInfo" class="hint"></span>
+        <div class="row-actions">
+          <button id="historyPrevBtn" class="btn tiny secondary" type="button">上一頁</button>
+          <button id="historyNextBtn" class="btn tiny secondary" type="button">下一頁</button>
+        </div>
       </div>
     </section>
 

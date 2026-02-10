@@ -22,11 +22,15 @@ Your Apps Script `doGet` must support:
   - `action=updateService&id=...&name=...&url=...&interval_min=...&enabled=true|false`
   - `action=deleteService&id=...`
   - `action=runNow`
+  - `action=getReportConfig`
+  - `action=updateReportConfig&recipients=...&frequency=hourly|daily&daily_hour=0-23&enabled=true|false&only_on_issue=true|false`
+  - `action=sendReportNow`
 
 ## Pages
 
 - `/index.html`: Dashboard (summary + table + charts)
 - `/admin.html`: Admin (add/update/disable service + run checks now)
+- `/health.html`: Backend health check (API latency + stale service detection)
 
 ## GitHub Pages
 
