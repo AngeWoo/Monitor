@@ -1,32 +1,68 @@
-// Use same-origin API path to avoid browser CORS issues.
-// Configure your web server to proxy this path to the Google Apps Script URL.
-export const API_BASE = "./api";
+// JSONP endpoint for GitHub Pages (no CORS dependency).
+export const API_BASE = "https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec";
 
-async function parseJson(response) {
-  if (!response.ok) {
-    if (response.status === 404 && API_BASE.startsWith("./")) {
-      throw new Error("API proxy not found. Please configure /api proxy on your web server.");
+function jsonpRequest(params, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const callbackName = `gasJsonp_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+    const url = new URL(API_BASE);
+
+    Object.entries(params).forEach(([k, v]) => {
+      if (v === undefined || v === null) return;
+      url.searchParams.set(k, String(v));
+    });
+    url.searchParams.set("callback", callbackName);
+
+    const script = document.createElement("script");
+    let done = false;
+    let timer;
+
+    function cleanup() {
+      if (script.parentNode) script.parentNode.removeChild(script);
+      if (timer) window.clearTimeout(timer);
+      try {
+        delete window[callbackName];
+      } catch (_) {
+        window[callbackName] = undefined;
+      }
     }
-    throw new Error(`HTTP ${response.status}`);
-  }
-  return response.json();
+
+    window[callbackName] = (data) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      if (data && data.ok === false) {
+        reject(new Error(data.error || "API error"));
+        return;
+      }
+      resolve(data);
+    };
+
+    script.onerror = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error("JSONP request failed."));
+    };
+
+    timer = window.setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error("JSONP request timeout."));
+    }, timeoutMs);
+
+    script.src = url.toString();
+    document.head.appendChild(script);
+  });
 }
 
 export async function apiGet(params) {
-  const url = new URL(API_BASE, window.location.href);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
-  const res = await fetch(url.toString(), { method: "GET" });
-  return parseJson(res);
+  return jsonpRequest(params);
 }
 
 export async function apiPost(payload) {
-  const url = new URL(API_BASE, window.location.href);
-  const res = await fetch(url.toString(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  return parseJson(res);
+  // For JSONP mode, POST actions are tunneled through query params.
+  return jsonpRequest(payload);
 }
 
 export function fmtDate(value) {
