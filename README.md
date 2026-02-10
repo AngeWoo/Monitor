@@ -5,44 +5,37 @@ Static frontend for monitoring services with Google Apps Script backend.
 ## API Endpoint
 Configured in `/assets/common.js`:
 
-- `./api` (same-origin proxy path)
-
-Target Google Apps Script endpoint:
-
 - `https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec`
 
-## Nginx proxy (required to avoid CORS)
+This frontend uses **JSONP** (script injection), so it works on GitHub Pages without CORS proxy.
 
-If your site is served under `/Monitor/`, add this in your Nginx server block:
+## GAS Requirements
 
-```nginx
-location /Monitor/api {
-    proxy_pass https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec;
-    proxy_ssl_server_name on;
-    proxy_set_header Host script.google.com;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
+Your Apps Script `doGet` must support:
 
-If your site is served from root (`/`), use `/api` instead:
-
-```nginx
-location /api {
-    proxy_pass https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec;
-    proxy_ssl_server_name on;
-    proxy_set_header Host script.google.com;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
+- `callback` query param (return `callback(<json>)` when provided)
+- read actions:
+  - `action=listServices`
+  - `action=metrics&serviceId=...&hours=...`
+- write actions via GET query params (JSONP tunnel):
+  - `action=addService&name=...&url=...&interval_min=...`
+  - `action=updateService&id=...&name=...&url=...&interval_min=...&enabled=true|false`
+  - `action=deleteService&id=...`
+  - `action=runNow`
 
 ## Pages
 
 - `/index.html`: Dashboard (summary + table + charts)
 - `/admin.html`: Admin (add/update/disable service + run checks now)
 
-## Local preview
+## GitHub Pages
+
+Upload all files to your repository root (or docs folder), enable GitHub Pages, and open:
+
+- `https://<your-account>.github.io/<repo>/index.html`
+- `https://<your-account>.github.io/<repo>/admin.html`
+
+## Local preview (UI only)
 
 ```bash
 python3 -m http.server 8080
@@ -52,5 +45,3 @@ Then open:
 
 - `http://localhost:8080/index.html`
 - `http://localhost:8080/admin.html`
-
-Note: `python3 -m http.server` does not provide `/api` proxy. Use Nginx for full API testing.
