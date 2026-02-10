@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Service Monitor Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./assets/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="bg-gradient"></div>
+  <header class="topbar">
+    <div>
+      <h1>Service Monitor</h1>
+      <p>Dashboard</p>
+    </div>
+    <nav>
+      <a class="active" href="./index.html">Dashboard</a>
+      <a href="./admin.html">後台管理</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="summary-grid" id="summary"></section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>服務狀態</h2>
+        <button id="refreshBtn" class="btn">重新整理</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>名稱</th>
+              <th>URL</th>
+              <th>狀態</th>
+              <th>HTTP</th>
+              <th>延遲(ms)</th>
+              <th>頻率(分)</th>
+              <th>最後檢查</th>
+              <th>查看圖表</th>
+            </tr>
+          </thead>
+          <tbody id="servicesBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="charts-grid">
+      <article class="panel">
+        <div class="panel-header">
+          <h2 id="latencyTitle">Latency (24h)</h2>
+          <select id="hoursSelect" class="select">
+            <option value="6">6 小時</option>
+            <option value="24" selected>24 小時</option>
+            <option value="72">72 小時</option>
+          </select>
+        </div>
+        <canvas id="latencyChart"></canvas>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2 id="uptimeTitle">Uptime Ratio</h2>
+        </div>
+        <canvas id="uptimeChart"></canvas>
+      </article>
+    </section>
+  </main>
+
+  <script type="module" src="./assets/dashboard.js"></script>
+</body>
+</html>
