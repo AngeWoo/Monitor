@@ -6,6 +6,10 @@ const adminBody = document.getElementById('adminServicesBody');
 const adminMessage = document.getElementById('adminMessage');
 const reloadBtn = document.getElementById('reloadBtn');
 const runNowBtn = document.getElementById('runNowBtn');
+const reportForm = document.getElementById('reportForm');
+const reportMessage = document.getElementById('reportMessage');
+const reloadReportBtn = document.getElementById('reloadReportBtn');
+const sendReportNowBtn = document.getElementById('sendReportNowBtn');
 
 let services = [];
 
@@ -117,11 +121,70 @@ async function handleRunNow() {
   }
 }
 
+function applyReportConfig(cfg) {
+  if (!reportForm) return;
+  reportForm.elements.recipients.value = safeText(cfg.recipients || '');
+  reportForm.elements.frequency.value = safeText(cfg.frequency || 'hourly');
+  reportForm.elements.daily_hour.value = Number.isFinite(Number(cfg.daily_hour))
+    ? Number(cfg.daily_hour)
+    : 9;
+  reportForm.elements.enabled.checked = String(cfg.enabled).toLowerCase() !== 'false';
+  reportForm.elements.only_on_issue.checked = String(cfg.only_on_issue).toLowerCase() !== 'false';
+}
+
+async function loadReportConfig() {
+  if (!reportMessage) return;
+  reportMessage.textContent = '讀取郵件設定中...';
+  try {
+    const res = await apiGet({ action: 'getReportConfig' });
+    applyReportConfig(res.data || {});
+    reportMessage.textContent = '郵件設定已載入';
+  } catch (err) {
+    reportMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
+  }
+}
+
+async function handleSaveReport(e) {
+  e.preventDefault();
+  reportMessage.textContent = '儲存中...';
+  const payload = {
+    action: 'updateReportConfig',
+    recipients: reportForm.elements.recipients.value,
+    frequency: reportForm.elements.frequency.value,
+    daily_hour: Number(reportForm.elements.daily_hour.value || 9),
+    enabled: reportForm.elements.enabled.checked,
+    only_on_issue: reportForm.elements.only_on_issue.checked
+  };
+
+  try {
+    const res = await apiPost(payload);
+    if (!res.ok) throw new Error(res.error || '儲存失敗');
+    reportMessage.textContent = '郵件設定已更新';
+  } catch (err) {
+    reportMessage.textContent = `儲存失敗: ${safeText(err.message)}`;
+  }
+}
+
+async function handleSendReportNow() {
+  reportMessage.textContent = '寄送中...';
+  try {
+    const res = await apiPost({ action: 'sendReportNow' });
+    if (!res.ok) throw new Error(res.error || '寄送失敗');
+    reportMessage.textContent = '已送出測試報告';
+  } catch (err) {
+    reportMessage.textContent = `寄送失敗: ${safeText(err.message)}`;
+  }
+}
+
 reloadBtn.addEventListener('click', loadServices);
 runNowBtn.addEventListener('click', handleRunNow);
 addForm.addEventListener('submit', handleAdd);
 adminBody.addEventListener('click', handleTableClick);
+if (reportForm) reportForm.addEventListener('submit', handleSaveReport);
+if (reloadReportBtn) reloadReportBtn.addEventListener('click', loadReportConfig);
+if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendReportNow);
 
 loadServices().catch(err => {
   adminMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
 });
+loadReportConfig();

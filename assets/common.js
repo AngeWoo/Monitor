@@ -76,6 +76,32 @@ export function safeText(v) {
   return (v ?? "").toString();
 }
 
+export function normalizeLatencyMs(value) {
+  if (value === null || value === undefined || value === "") return null;
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.round(value);
+  }
+
+  const asNum = Number(value);
+  if (Number.isFinite(asNum)) {
+    return Math.round(asNum);
+  }
+
+  const d = new Date(value);
+  if (!Number.isNaN(d.getTime())) {
+    // When Google Sheets column is date-formatted, small numeric values
+    // can be returned as dates around year 1900. Convert back to serial number.
+    if (d.getUTCFullYear() < 1971) {
+      const sheetsEpoch = Date.UTC(1899, 11, 30);
+      const serial = (d.getTime() - sheetsEpoch) / 86400000;
+      if (Number.isFinite(serial)) return Math.round(serial);
+    }
+  }
+
+  return null;
+}
+
 export function statusBadge(status) {
   if (status === "UP") return '<span class="badge up">UP</span>';
   if (status === "DOWN") return '<span class="badge down">DOWN</span>';
