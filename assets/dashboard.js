@@ -2,6 +2,10 @@ import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge } from './co
 
 const summaryEl = document.getElementById('summary');
 const tbody = document.getElementById('servicesBody');
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingLabel = document.getElementById('loadingLabel');
+const loadingPercent = document.getElementById('loadingPercent');
+const loadingBarInner = document.getElementById('loadingBarInner');
 const refreshBtn = document.getElementById('refreshBtn');
 const refreshIntervalSelect = document.getElementById('refreshIntervalSelect');
 const autoRefreshInfo = document.getElementById('autoRefreshInfo');
@@ -21,6 +25,7 @@ const historyPageInfo = document.getElementById('historyPageInfo');
 const historyPrevBtn = document.getElementById('historyPrevBtn');
 const historyNextBtn = document.getElementById('historyNextBtn');
 const HISTORY_PAGE_SIZE = 10;
+const ALL_SERVICES_ID = '__ALL__';
 
 let services = [];
 let selectedId = null;
@@ -38,11 +43,25 @@ let historySortType = 'date';
 let historySortDir = 'desc';
 let historyPage = 1;
 let latencyRange = { start: null, end: null };
+let firstLoadPending = true;
 
 function parseDateTimeLocalValue(value) {
   if (!value) return null;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function getActiveRange() {
+  if (latencyRange.start || latencyRange.end) {
+    return {
+      start: latencyRange.start || null,
+      end: latencyRange.end || null
+    };
+  }
+  const hours = Math.max(1, Number(hoursSelect?.value || 24));
+  const end = new Date();
+  const start = new Date(end.getTime() - hours * 3600 * 1000);
+  return { start, end };
 }
 
 function toDateTimeLocalValue(date) {
@@ -63,6 +82,18 @@ function setRangeActiveButton(activeBtn) {
   if (clearLatencyRangeBtn) {
     clearLatencyRangeBtn.classList.toggle('active', clearLatencyRangeBtn === activeBtn);
   }
+}
+
+function setLoadingOverlay(show) {
+  if (!loadingOverlay) return;
+  loadingOverlay.classList.toggle('hidden', !show);
+}
+
+function setLoadingProgress(percent, label) {
+  const p = Math.max(0, Math.min(100, Number(percent) || 0));
+  if (loadingPercent) loadingPercent.textContent = `${Math.round(p)}%`;
+  if (loadingBarInner) loadingBarInner.style.width = `${p}%`;
+  if (loadingLabel && label) loadingLabel.textContent = label;
 }
 
 function detectQuickRangeButton(start, end) {
@@ -225,13 +256,25 @@ function renderSummary() {
   const enabled = services.filter(s => String(s.enabled).toUpperCase() === 'TRUE').length;
   const up = services.filter(s => s.last_status === 'UP').length;
   const down = services.filter(s => s.last_status === 'DOWN').length;
+  const availability = enabled > 0 ? `${((up / enabled) * 100).toFixed(1)}%` : '0.0%';
+  const activeRange = getActiveRange();
+  const rangeText = `${activeRange.start ? fmtDate(activeRange.start) : '起始'}\n~ ${activeRange.end ? fmtDate(activeRange.end) : '結束'}`;
 
   summaryEl.innerHTML = [
     { label: '總服務數', value: total },
     { label: '啟用中', value: enabled },
     { label: '目前 UP', value: up },
-    { label: '目前 DOWN', value: down }
-  ].map(item => `<article class="metric"><p>${item.label}</p><strong>${item.value}</strong></article>`).join('');
+    { label: '目前 DOWN', value: down },
+    { label: '可用率', value: availability },
+    { label: '日期起訖', value: rangeText, isRange: true }
+  ].map(item => `
+    <article class="metric">
+      <p>${item.label}</p>
+      ${item.isRange
+        ? `<div class="metric-range-value">${safeText(item.value).replace('\n', '<br>')}</div>`
+        : `<strong>${item.value}</strong>`}
+    </article>
+  `).join('');
 }
 
 function renderTable() {
@@ -450,7 +493,7 @@ function ensureCharts() {
   }
 }
 
-async function renderAllLatencyStats() {
+async function renderAllLatencyStats(onProgress) {
   if (!allLatencyChart) ensureCharts();
   if (!allLatencyChart || !allLatencyTitle) return;
   if (!services.length) {
@@ -460,6 +503,7 @@ async function renderAllLatencyStats() {
     allLatencyChart.data.datasets[1].data = [];
     allLatencyChart.data.datasets[2].data = [];
     allLatencyChart.update();
+    if (onProgress) onProgress(100);
     return;
   }
 
@@ -481,6 +525,8 @@ async function renderAllLatencyStats() {
   const metricsCandidates = entries.filter((item) => item.id);
   if (metricsCandidates.length) {
     const hours = Math.max(1, Number(hoursSelect?.value || 24));
+    let done = 0;
+    const total = metricsCandidates.length;
     const statsResults = await Promise.all(metricsCandidates.map(async (item) => {
       try {
         const result = await apiGet({ action: 'metrics', serviceId: item.id, hours });
@@ -512,7 +558,10 @@ async function renderAllLatencyStats() {
         downCount: 0,
         okCount: 0
       };
-    }));
+    }).map((promise) => promise.finally(() => {
+      done += 1;
+      if (onProgress) onProgress((done / total) * 100);
+    })));
 
     const statsById = new Map(statsResults.map((r) => [r.id, r]));
     entries.forEach((item) => {
@@ -559,15 +608,42 @@ async function renderAllLatencyStats() {
   allLatencyChart.options.scales.y.suggestedMax = 100;
   allLatencyChart.options.scales.y1.suggestedMax = hasLatencyCount ? undefined : 10;
   allLatencyChart.update();
+  if (onProgress) onProgress(100);
 }
 
-async function renderMetrics() {
-  const service = services.find(s => s.id === selectedId);
-  if (!service) return;
-
+async function renderMetrics(onProgress) {
   const hours = Number(hoursSelect.value || 24);
-  const result = await apiGet({ action: 'metrics', serviceId: selectedId, hours });
-  const rawRows = (result.data || []).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  let serviceName = '所有項目';
+  let rawRows = [];
+
+  if (selectedId && selectedId !== ALL_SERVICES_ID) {
+    const service = services.find((s) => s.id === selectedId);
+    if (!service) return;
+    serviceName = safeText(service.name);
+    const result = await apiGet({ action: 'metrics', serviceId: selectedId, hours });
+    rawRows = (result.data || []).map((r) => ({ ...r, _serviceId: selectedId }));
+    if (onProgress) onProgress(100);
+  } else {
+    const allTargets = services.slice();
+    let done = 0;
+    const total = Math.max(1, allTargets.length);
+    const allResults = await Promise.all(
+      allTargets.map(async (s) => {
+        try {
+          const result = await apiGet({ action: 'metrics', serviceId: s.id, hours });
+          return (result.data || []).map((r) => ({ ...r, _serviceId: s.id }));
+        } catch (_) {
+          return [];
+        } finally {
+          done += 1;
+          if (onProgress) onProgress((done / total) * 100);
+        }
+      })
+    );
+    rawRows = allResults.flat();
+  }
+
+  rawRows.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
   const startTs = latencyRange.start ? latencyRange.start.getTime() : null;
   const endTs = latencyRange.end ? latencyRange.end.getTime() : null;
   const rows = rawRows.filter((r) => {
@@ -595,9 +671,10 @@ async function renderMetrics() {
   const rangeText = hasRange
     ? ` | 區間: ${latencyRange.start ? fmtDate(latencyRange.start) : '起始'} ~ ${latencyRange.end ? fmtDate(latencyRange.end) : '結束'}`
     : '';
-  latencyTitle.textContent = `${safeText(service.name)} | Latency (${hours}h)${rangeText}`;
-  uptimeTitle.textContent = `${safeText(service.name)} | Uptime Ratio`;
-  renderMinuteHistory(service.name, rows);
+  latencyTitle.textContent = `${serviceName} | Latency (${hours}h)${rangeText}`;
+  uptimeTitle.textContent = `${serviceName} | Uptime Ratio`;
+  renderSummary();
+  renderMinuteHistory(serviceName, rows);
 
   latencyChart.data.labels = labels;
   latencyChart.data.datasets[0].data = latency;
@@ -615,24 +692,34 @@ async function renderMetrics() {
 async function loadServices() {
   if (isLoading) return;
   isLoading = true;
+  setLoadingOverlay(firstLoadPending);
+  if (firstLoadPending) setLoadingProgress(5, '讀取服務清單...');
 
   try {
     const result = await apiGet({ action: 'listServices' });
     services = result.data || [];
+    if (firstLoadPending) setLoadingProgress(25, '整理服務資料...');
 
-    if (!selectedId && services[0]) {
-      selectedId = services[0].id;
+    if (!selectedId) {
+      selectedId = ALL_SERVICES_ID;
     }
-    if (selectedId && !services.some(s => s.id === selectedId)) {
-      selectedId = services[0] ? services[0].id : null;
+    if (selectedId !== ALL_SERVICES_ID && selectedId && !services.some(s => s.id === selectedId)) {
+      selectedId = ALL_SERVICES_ID;
     }
 
     renderSummary();
     renderTable();
-    await renderAllLatencyStats();
-    await renderMetrics();
+    if (firstLoadPending) setLoadingProgress(35, '載入所有測試項目統計...');
+    await renderAllLatencyStats(firstLoadPending ? (p) => setLoadingProgress(35 + p * 0.35, '載入所有測試項目統計...') : null);
+    if (firstLoadPending) setLoadingProgress(72, '載入 Latency / Uptime...');
+    await renderMetrics(firstLoadPending ? (p) => setLoadingProgress(72 + p * 0.26, '載入 Latency / Uptime...') : null);
+    if (firstLoadPending) setLoadingProgress(100, '載入完成');
   } finally {
     isLoading = false;
+    if (firstLoadPending) {
+      firstLoadPending = false;
+      window.setTimeout(() => setLoadingOverlay(false), 180);
+    }
   }
 }
 
