@@ -21,6 +21,7 @@ Your Apps Script `doGet` must support:
   - `action=addService&name=...&url=...&interval_min=...`
   - `action=updateService&id=...&name=...&url=...&interval_min=...&enabled=true|false`
   - `action=deleteService&id=...`
+  - `action=deleteTestDataByDate&date=YYYY-MM-DD`
   - `action=runNow`
   - `action=getReportConfig`
   - `action=updateReportConfig&recipients=...&frequency=hourly|daily&daily_hour=0-23&enabled=true|false&only_on_issue=true|false`
