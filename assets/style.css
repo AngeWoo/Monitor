@@ -305,6 +305,13 @@ canvas {
   align-items: end;
 }
 
+.test-data-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) auto;
+  gap: 12px;
+  align-items: end;
+}
+
 .report-grid {
   display: grid;
   grid-template-columns: 1.1fr 1.1fr 1.2fr auto;
@@ -419,6 +426,10 @@ label {
   }
 
   .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .test-data-grid {
     grid-template-columns: 1fr;
   }
 

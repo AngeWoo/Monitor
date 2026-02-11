@@ -42,7 +42,7 @@ function minuteKey(dateValue) {
 
 function renderMinuteHistory(serviceName, rows) {
   if (!minuteHistoryBody || !historyTitle) return;
-  historyTitle.textContent = `${safeText(serviceName)} 每分鐘歷史記錄`;
+  historyTitle.textContent = '每分鐘歷史記錄';
 
   if (!rows.length) {
     minuteHistoryRows = [];
@@ -220,10 +220,41 @@ function ensureCharts() {
   if (!latencyChart) {
     latencyChart = new Chart(document.getElementById('latencyChart'), {
       type: 'line',
-      data: { labels: [], datasets: [{ label: 'Latency ms', data: [], tension: 0.25 }] },
+      data: {
+        labels: [],
+        datasets: [{
+          label: 'Latency ms',
+          data: [],
+          tension: 0.25,
+          pointRadius: 3,
+          pointHoverRadius: 8,
+          pointHitRadius: 36,
+          spanGaps: true
+        }]
+      },
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        interaction: {
+          mode: 'nearest',
+          axis: 'x',
+          intersect: false
+        },
+        plugins: {
+          tooltip: {
+            enabled: true,
+            callbacks: {
+              title(ctx) {
+                if (!ctx || !ctx.length) return '';
+                return `時間: ${safeText(ctx[0].label)}`;
+              },
+              label(ctx) {
+                const v = Number(ctx.parsed?.y ?? ctx.raw ?? 0);
+                return `Latency: ${Math.round(v)} ms`;
+              }
+            }
+          }
+        },
         scales: { y: { beginAtZero: true } }
       }
     });
@@ -250,7 +281,7 @@ function ensureCharts() {
             labels: [],
             datasets: [
               {
-                label: '正常次數',
+                label: '正常佔比(%)',
                 data: [],
                 yAxisID: 'y',
                 backgroundColor: '#8cb0ff',
@@ -261,7 +292,7 @@ function ensureCharts() {
                 minBarLength: 4
               },
               {
-                label: '中斷次數(DOWN)',
+                label: '中斷佔比(%)',
                 data: [],
                 yAxisID: 'y',
                 backgroundColor: '#f3a39a',
@@ -281,17 +312,46 @@ function ensureCharts() {
                 borderWidth: 2,
                 tension: 0.25,
                 pointRadius: 3,
-                pointHoverRadius: 4
+                pointHoverRadius: 7,
+                pointHitRadius: 24
               }
             ]
           },
           options: {
             responsive: true,
             maintainAspectRatio: false,
-            plugins: { legend: { display: true } },
+            interaction: {
+              mode: 'index',
+              intersect: false
+            },
+            plugins: {
+              legend: { display: true },
+              tooltip: {
+                callbacks: {
+                  label(ctx) {
+                    const label = ctx.dataset?.label || '';
+                    const v = Number(ctx.parsed?.y ?? ctx.raw ?? 0);
+                    if (ctx.datasetIndex === 0 || ctx.datasetIndex === 1) {
+                      return `${label}: ${v.toFixed(1)}%`;
+                    }
+                    return `${label}: ${Math.round(v)} ms`;
+                  }
+                }
+              }
+            },
             scales: {
               x: { stacked: true, ticks: { maxRotation: 45, minRotation: 0 } },
-              y: { stacked: true, beginAtZero: true, title: { display: true, text: '次數' } },
+              y: {
+                stacked: true,
+                beginAtZero: true,
+                max: 100,
+                ticks: {
+                  callback(value) {
+                    return `${value}%`;
+                  }
+                },
+                title: { display: true, text: '百分比(%)' }
+              },
               y1: {
                 beginAtZero: true,
                 position: 'right',
@@ -395,15 +455,28 @@ async function renderAllLatencyStats() {
   }
 
   const hasLatencyCount = entries.filter((item) => item.latency !== null).length;
+  const maxSampleEntry = entries.reduce((best, item) => {
+    const sample = Number(item.testCount || 0);
+    if (!best || sample > best.sample) return { sample };
+    return best;
+  }, null);
   allLatencyTitle.textContent = hasLatencyCount
-    ? `所有測試項目 Latency 統計 (${hasLatencyCount}/${entries.length})`
+    ? `所有測試項目 Latency 統計 (${hasLatencyCount}/${entries.length}) | 最大統計筆數: ${maxSampleEntry?.sample || 0}`
     : '所有測試項目 Latency 統計（目前無可用 latency 資料）';
 
   allLatencyChart.data.labels = entries.map((item) => item.name);
-  allLatencyChart.data.datasets[0].data = entries.map((item) => item.okCount || 0);
-  allLatencyChart.data.datasets[1].data = entries.map((item) => item.downCount || 0);
+  allLatencyChart.data.datasets[0].data = entries.map((item) => {
+    const total = Number(item.testCount || 0);
+    if (total <= 0) return 0;
+    return Math.round(((Number(item.okCount || 0) / total) * 100) * 10) / 10;
+  });
+  allLatencyChart.data.datasets[1].data = entries.map((item) => {
+    const total = Number(item.testCount || 0);
+    if (total <= 0) return 0;
+    return Math.round(((Number(item.downCount || 0) / total) * 100) * 10) / 10;
+  });
   allLatencyChart.data.datasets[2].data = entries.map((item) => (item.value ?? 0));
-  allLatencyChart.options.scales.y.suggestedMax = undefined;
+  allLatencyChart.options.scales.y.suggestedMax = 100;
   allLatencyChart.options.scales.y1.suggestedMax = hasLatencyCount ? undefined : 10;
   allLatencyChart.update();
 }
@@ -421,8 +494,8 @@ async function renderMetrics() {
   const upCount = rows.filter(r => r.status === 'UP').length;
   const downCount = rows.filter(r => r.status === 'DOWN').length;
 
-  latencyTitle.textContent = `${safeText(service.name)} Latency (${hours}h)`;
-  uptimeTitle.textContent = `${safeText(service.name)} Uptime Ratio`;
+  latencyTitle.textContent = `Latency (${hours}h)`;
+  uptimeTitle.textContent = 'Uptime Ratio';
   renderMinuteHistory(service.name, rows);
 
   latencyChart.data.labels = labels;

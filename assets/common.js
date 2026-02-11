@@ -1,7 +1,7 @@
 // JSONP endpoint for GitHub Pages (no CORS dependency).
 export const API_BASE = "https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec";
 
-function jsonpRequest(params, timeoutMs = 15000) {
+function jsonpRequest(params, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const callbackName = `gasJsonp_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
     const url = new URL(API_BASE);

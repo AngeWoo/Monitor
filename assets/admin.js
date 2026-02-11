@@ -10,6 +10,8 @@ const reportForm = document.getElementById('reportForm');
 const reportMessage = document.getElementById('reportMessage');
 const reloadReportBtn = document.getElementById('reloadReportBtn');
 const sendReportNowBtn = document.getElementById('sendReportNowBtn');
+const deleteTestDataForm = document.getElementById('deleteTestDataForm');
+const deleteTestDataMessage = document.getElementById('deleteTestDataMessage');
 
 let services = [];
 
@@ -176,6 +178,35 @@ async function handleSendReportNow() {
   }
 }
 
+async function handleDeleteTestData(e) {
+  e.preventDefault();
+  if (!deleteTestDataForm || !deleteTestDataMessage) return;
+
+  const date = deleteTestDataForm.elements.date.value;
+  if (!date) {
+    deleteTestDataMessage.textContent = '請先選擇日期';
+    return;
+  }
+
+  const confirmed = window.confirm(`確定要刪除 ${date} 的測試資料嗎？此操作無法復原。`);
+  if (!confirmed) return;
+
+  deleteTestDataMessage.textContent = '刪除中...';
+  try {
+    const res = await apiPost({ action: 'deleteTestDataByDate', date });
+    if (!res.ok) throw new Error(res.error || '刪除失敗');
+
+    const removedCount = Number(res.data?.deleted_count);
+    if (Number.isFinite(removedCount)) {
+      deleteTestDataMessage.textContent = `刪除完成，共刪除 ${removedCount} 筆`;
+      return;
+    }
+    deleteTestDataMessage.textContent = '刪除完成';
+  } catch (err) {
+    deleteTestDataMessage.textContent = `刪除失敗: ${safeText(err.message)}`;
+  }
+}
+
 reloadBtn.addEventListener('click', loadServices);
 runNowBtn.addEventListener('click', handleRunNow);
 addForm.addEventListener('submit', handleAdd);
@@ -183,6 +214,7 @@ adminBody.addEventListener('click', handleTableClick);
 if (reportForm) reportForm.addEventListener('submit', handleSaveReport);
 if (reloadReportBtn) reloadReportBtn.addEventListener('click', loadReportConfig);
 if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendReportNow);
+if (deleteTestDataForm) deleteTestDataForm.addEventListener('submit', handleDeleteTestData);
 
 loadServices().catch(err => {
   adminMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
