@@ -4,6 +4,7 @@
  * - 郵件內容包含所有啟用服務
  * - only_on_issue=true 時：有異常就每次 runScheduler 都寄
  * - deleteTestDataByDate: 刪除 checks 中指定日期的所有資料（不看 is_test）
+ * - Dashboard URL: 動態由前端帶入 dashboard_url 並儲存，寄信 footer 自動附上
  *********************************/
 const SHEET_SERVICES = "services";
 const SHEET_CHECKS = "checks";
@@ -11,6 +12,8 @@ const API_KEY = "";
 
 const PROP_REPORT_CONFIG = "REPORT_CONFIG";
 const PROP_REPORT_LAST_SLOT = "REPORT_LAST_SLOT";
+const PROP_DASHBOARD_URL = "DASHBOARD_URL";
+
 const TEST_DELETE_DEFAULT_SHEET = SHEET_CHECKS;
 
 const SERVICE_HEADERS = [
@@ -62,6 +65,9 @@ function doGet(e) {
     const p = (e && e.parameter) ? e.parameter : {};
     const callback = p.callback || "";
     const action = (p.action || "").trim();
+
+    // 嘗試從前端請求動態更新 dashboard URL
+    captureDashboardUrlFromParams_(p);
 
     if (!authOk_(p)) return output_(callback, { ok: false, error: "Unauthorized" });
     if (!action) return output_(callback, { ok: false, error: "Missing action" });
@@ -123,6 +129,10 @@ function doGet(e) {
 function doPost(e) {
   try {
     const body = JSON.parse((e && e.postData && e.postData.contents) || "{}");
+
+    // 嘗試從前端請求動態更新 dashboard URL
+    captureDashboardUrlFromPayload_(body);
+
     if (!authOk_(body)) return jsonOut_({ ok: false, error: "Unauthorized" });
 
     const action = (body.action || "").trim();
@@ -491,6 +501,11 @@ function sendStatusReport_(cfg, forceSend, now) {
       }).join("")
     : `<tr><td colspan="7">目前沒有啟用服務</td></tr>`;
 
+  const dashboardUrl = getDashboardUrl_();
+  const dashboardHtml = dashboardUrl
+    ? `<hr><p style="margin-top:12px;">Dashboard：<a href="${escapeHtml_(dashboardUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml_(dashboardUrl)}</a></p>`
+    : "";
+
   const htmlBody =
     `<h2>Service Monitor 狀態報告</h2>
      <p>時間：${escapeHtml_(at)}</p>
@@ -498,7 +513,7 @@ function sendStatusReport_(cfg, forceSend, now) {
      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
        <thead><tr><th>服務</th><th>URL</th><th>狀態</th><th>HTTP</th><th>延遲(ms)</th><th>最後檢查</th><th>是否異常</th></tr></thead>
        <tbody>${allRowsHtml}</tbody>
-     </table>`;
+     </table>${dashboardHtml}`;
 
   const plainLines = services.map((s) => {
     const st = String(s.last_status || "UNKNOWN");
@@ -509,15 +524,47 @@ function sendStatusReport_(cfg, forceSend, now) {
     return `- ${s.name} | ${st} | HTTP ${code} | ${latency} ms | ${t} | ISSUE:${isIssue}`;
   });
 
-  const plain =
+  let plain =
     `Service Monitor 狀態報告\n` +
     `時間: ${at}\n` +
     `啟用服務: ${services.length}, 正常: ${upCount}, 異常: ${issues.length}\n\n` +
     `所有服務列表:\n` +
     (plainLines.length ? plainLines.join("\n") : "(無啟用服務)");
 
+  if (dashboardUrl) plain += `\n\nDashboard: ${dashboardUrl}`;
+
   GmailApp.sendEmail(recipients.join(","), subject, plain, { htmlBody: htmlBody });
   return { ok: true, sent: true, issues: issues.length };
+}
+
+/*************** Dashboard URL Capture ***************/
+function captureDashboardUrlFromParams_(p) {
+  const url = normalizeDashboardUrl_(p && (p.dashboard_url || p.dashboardUrl));
+  if (!url) return;
+  PropertiesService.getScriptProperties().setProperty(PROP_DASHBOARD_URL, url);
+}
+
+function captureDashboardUrlFromPayload_(body) {
+  const url = normalizeDashboardUrl_(body && (body.dashboard_url || body.dashboardUrl));
+  if (!url) return;
+  PropertiesService.getScriptProperties().setProperty(PROP_DASHBOARD_URL, url);
+}
+
+function getDashboardUrl_() {
+  return String(PropertiesService.getScriptProperties().getProperty(PROP_DASHBOARD_URL) || "").trim();
+}
+
+function normalizeDashboardUrl_(raw) {
+  if (!raw) return "";
+  const s = String(raw).trim();
+  if (!/^https?:\/\//i.test(s)) return "";
+  try {
+    const u = new URL(s);
+    u.hash = "";
+    return u.toString();
+  } catch (_) {
+    return "";
+  }
 }
 
 /*************** Utils ***************/
