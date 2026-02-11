@@ -44,6 +44,8 @@ let historySortDir = 'desc';
 let historyPage = 1;
 let latencyRange = { start: null, end: null };
 let firstLoadPending = true;
+let loadingShownAt = 0;
+const LOADING_MIN_SHOW_MS = 800;
 
 function parseDateTimeLocalValue(value) {
   if (!value) return null;
@@ -86,6 +88,7 @@ function setRangeActiveButton(activeBtn) {
 
 function setLoadingOverlay(show) {
   if (!loadingOverlay) return;
+  if (show) loadingShownAt = Date.now();
   loadingOverlay.classList.toggle('hidden', !show);
 }
 
@@ -718,7 +721,9 @@ async function loadServices() {
     isLoading = false;
     if (firstLoadPending) {
       firstLoadPending = false;
-      window.setTimeout(() => setLoadingOverlay(false), 180);
+      const elapsed = Date.now() - loadingShownAt;
+      const waitMs = Math.max(0, LOADING_MIN_SHOW_MS - elapsed);
+      window.setTimeout(() => setLoadingOverlay(false), waitMs);
     }
   }
 }
