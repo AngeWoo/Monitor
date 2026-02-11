@@ -42,7 +42,7 @@ body {
 }
 
 .topbar {
-  width: min(1180px, 92vw);
+  width: min(1600px, 90vw);
   margin: 24px auto 12px;
   padding: 16px 20px;
   border-radius: 18px;
@@ -96,7 +96,7 @@ nav a.active {
 }
 
 .container {
-  width: min(1180px, 92vw);
+  width: min(1600px, 90vw);
   margin: 0 auto 48px;
   display: grid;
   gap: 16px;
@@ -272,6 +272,12 @@ input {
   border-color: var(--line);
 }
 
+.btn.secondary.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
 .btn.tiny {
   padding: 6px 10px;
   font-size: 0.86rem;
@@ -285,7 +291,7 @@ input {
 .charts-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 4fr) minmax(0, 1fr);
 }
 
 canvas {
@@ -391,6 +397,15 @@ label {
   align-items: center;
 }
 
+.latency-filters {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.latency-filters input[type="datetime-local"] {
+  width: 210px;
+}
+
 .hint {
   color: var(--muted);
   font-size: 0.88rem;
@@ -416,6 +431,11 @@ label {
   color: #8f2b00;
 }
 
+.history-alert-row td {
+  color: var(--danger);
+  font-weight: 600;
+}
+
 @media (max-width: 980px) {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -436,6 +456,10 @@ label {
   .topbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .latency-filters {
+    justify-content: flex-start;
   }
 }
 

@@ -9,6 +9,11 @@ const hoursSelect = document.getElementById('hoursSelect');
 const latencyTitle = document.getElementById('latencyTitle');
 const uptimeTitle = document.getElementById('uptimeTitle');
 const allLatencyTitle = document.getElementById('allLatencyTitle');
+const latencyRangeStart = document.getElementById('latencyRangeStart');
+const latencyRangeEnd = document.getElementById('latencyRangeEnd');
+const applyLatencyRangeBtn = document.getElementById('applyLatencyRangeBtn');
+const clearLatencyRangeBtn = document.getElementById('clearLatencyRangeBtn');
+const quickRangeBtns = document.querySelectorAll('.quick-range-btn');
 const historyTitle = document.getElementById('historyTitle');
 const minuteHistoryHead = document.getElementById('minuteHistoryHead');
 const minuteHistoryBody = document.getElementById('minuteHistoryBody');
@@ -32,6 +37,44 @@ let historySortKey = 'minute';
 let historySortType = 'date';
 let historySortDir = 'desc';
 let historyPage = 1;
+let latencyRange = { start: null, end: null };
+
+function parseDateTimeLocalValue(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function toDateTimeLocalValue(date) {
+  if (!date || Number.isNaN(date.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function setRangeActiveButton(activeBtn) {
+  if (quickRangeBtns && quickRangeBtns.length) {
+    quickRangeBtns.forEach((btn) => {
+      btn.classList.toggle('active', btn === activeBtn);
+    });
+  }
+  if (applyLatencyRangeBtn) {
+    applyLatencyRangeBtn.classList.toggle('active', applyLatencyRangeBtn === activeBtn);
+  }
+  if (clearLatencyRangeBtn) {
+    clearLatencyRangeBtn.classList.toggle('active', clearLatencyRangeBtn === activeBtn);
+  }
+}
+
+function detectQuickRangeButton(start, end) {
+  if (!start || !end || !quickRangeBtns || !quickRangeBtns.length) return null;
+  const diffMin = Math.round((end.getTime() - start.getTime()) / 60000);
+  for (const btn of quickRangeBtns) {
+    const mins = Number(btn.dataset.minutes || 0);
+    if (!Number.isFinite(mins) || mins <= 0) continue;
+    if (Math.abs(diffMin - mins) <= 1) return btn;
+  }
+  return null;
+}
 
 function minuteKey(dateValue) {
   const d = new Date(dateValue);
@@ -42,7 +85,7 @@ function minuteKey(dateValue) {
 
 function renderMinuteHistory(serviceName, rows) {
   if (!minuteHistoryBody || !historyTitle) return;
-  historyTitle.textContent = '每分鐘歷史記錄';
+  historyTitle.textContent = `每分鐘歷史記錄 - ${safeText(serviceName)}`;
 
   if (!rows.length) {
     minuteHistoryRows = [];
@@ -162,8 +205,10 @@ function renderMinuteHistoryPage() {
 
   minuteHistoryBody.innerHTML = pageRows.map((r) => {
     const avgLatency = r.avgLatency >= 0 ? r.avgLatency : '-';
+    const hasIssue = Number(r.downCount || 0) === 1;
+    const rowClass = hasIssue ? 'history-alert-row' : '';
     return `
-      <tr>
+      <tr class="${rowClass}">
         <td>${fmtDate(r.minute)}</td>
         <td>${r.upCount}</td>
         <td>${r.downCount}</td>
@@ -222,15 +267,49 @@ function ensureCharts() {
       type: 'line',
       data: {
         labels: [],
-        datasets: [{
-          label: 'Latency ms',
-          data: [],
-          tension: 0.25,
-          pointRadius: 3,
-          pointHoverRadius: 8,
-          pointHitRadius: 36,
-          spanGaps: true
-        }]
+        datasets: [
+          {
+            label: 'Latency',
+            data: [],
+            tension: 0.25,
+            borderColor: '#2aa18f',
+            backgroundColor: '#2aa18f44',
+            pointRadius: 3,
+            pointHoverRadius: 8,
+            pointHitRadius: 36,
+            spanGaps: true
+          },
+          {
+            label: '平均線',
+            data: [],
+            tension: 0,
+            borderColor: '#e1b400',
+            borderDash: [6, 6],
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            spanGaps: true
+          },
+          {
+            label: '最大線',
+            data: [],
+            tension: 0,
+            borderColor: '#be2d2d',
+            borderDash: [8, 6],
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            spanGaps: true
+          },
+          {
+            label: '最小線',
+            data: [],
+            tension: 0,
+            borderColor: '#1d8b4f',
+            borderDash: [4, 4],
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            spanGaps: true
+          }
+        ]
       },
       options: {
         responsive: true,
@@ -250,7 +329,8 @@ function ensureCharts() {
               },
               label(ctx) {
                 const v = Number(ctx.parsed?.y ?? ctx.raw ?? 0);
-                return `Latency: ${Math.round(v)} ms`;
+                const name = safeText(ctx.dataset?.label || 'Latency');
+                return `${name}: ${Math.round(v)} ms`;
               }
             }
           }
@@ -487,19 +567,45 @@ async function renderMetrics() {
 
   const hours = Number(hoursSelect.value || 24);
   const result = await apiGet({ action: 'metrics', serviceId: selectedId, hours });
-  const rows = (result.data || []).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  const rawRows = (result.data || []).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  const startTs = latencyRange.start ? latencyRange.start.getTime() : null;
+  const endTs = latencyRange.end ? latencyRange.end.getTime() : null;
+  const rows = rawRows.filter((r) => {
+    const ts = new Date(r.timestamp).getTime();
+    if (Number.isNaN(ts)) return false;
+    if (startTs !== null && ts < startTs) return false;
+    if (endTs !== null && ts > endTs) return false;
+    return true;
+  });
 
   const labels = rows.map(r => fmtDate(r.timestamp));
-  const latency = rows.map(r => normalizeLatencyMs(r.latency_ms) ?? 0);
+  const latencyValues = rows.map(r => normalizeLatencyMs(r.latency_ms));
+  const latency = latencyValues.map(v => v ?? 0);
+  const validLatency = latencyValues.filter((v) => v !== null);
+  const avgLatency = validLatency.length
+    ? Math.round(validLatency.reduce((sum, v) => sum + v, 0) / validLatency.length)
+    : null;
+  const maxLatency = validLatency.length ? Math.max(...validLatency) : null;
+  const minLatency = validLatency.length ? Math.min(...validLatency) : null;
+  const pointColors = rows.map(r => (safeText(r.status) === 'DOWN' ? '#be2d2d' : '#2aa18f'));
   const upCount = rows.filter(r => r.status === 'UP').length;
   const downCount = rows.filter(r => r.status === 'DOWN').length;
 
-  latencyTitle.textContent = `Latency (${hours}h)`;
-  uptimeTitle.textContent = 'Uptime Ratio';
+  const hasRange = latencyRange.start || latencyRange.end;
+  const rangeText = hasRange
+    ? ` | 區間: ${latencyRange.start ? fmtDate(latencyRange.start) : '起始'} ~ ${latencyRange.end ? fmtDate(latencyRange.end) : '結束'}`
+    : '';
+  latencyTitle.textContent = `${safeText(service.name)} | Latency (${hours}h)${rangeText}`;
+  uptimeTitle.textContent = `${safeText(service.name)} | Uptime Ratio`;
   renderMinuteHistory(service.name, rows);
 
   latencyChart.data.labels = labels;
   latencyChart.data.datasets[0].data = latency;
+  latencyChart.data.datasets[0].pointBackgroundColor = pointColors;
+  latencyChart.data.datasets[0].pointBorderColor = pointColors;
+  latencyChart.data.datasets[1].data = labels.map(() => (avgLatency ?? null));
+  latencyChart.data.datasets[2].data = labels.map(() => (maxLatency ?? null));
+  latencyChart.data.datasets[3].data = labels.map(() => (minLatency ?? null));
   latencyChart.update();
 
   uptimeChart.data.datasets[0].data = [upCount, downCount];
@@ -582,6 +688,47 @@ function bindEvents() {
   hoursSelect.addEventListener('change', async () => {
     await renderMetrics();
   });
+
+  if (applyLatencyRangeBtn) {
+    applyLatencyRangeBtn.addEventListener('click', async () => {
+      const start = parseDateTimeLocalValue(latencyRangeStart?.value);
+      const end = parseDateTimeLocalValue(latencyRangeEnd?.value);
+      if (start && end && start.getTime() > end.getTime()) {
+        if (latencyTitle) latencyTitle.textContent = 'Latency 區間錯誤：起始時間不能晚於結束時間';
+        return;
+      }
+      latencyRange = { start, end };
+      const quickBtn = detectQuickRangeButton(start, end);
+      setRangeActiveButton(quickBtn || applyLatencyRangeBtn);
+      await renderMetrics();
+    });
+  }
+
+  if (clearLatencyRangeBtn) {
+    clearLatencyRangeBtn.addEventListener('click', async () => {
+      latencyRange = { start: null, end: null };
+      if (latencyRangeStart) latencyRangeStart.value = '';
+      if (latencyRangeEnd) latencyRangeEnd.value = '';
+      setRangeActiveButton(clearLatencyRangeBtn);
+      await renderMetrics();
+    });
+  }
+
+  if (quickRangeBtns && quickRangeBtns.length) {
+    quickRangeBtns.forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const mins = Math.max(1, Number(btn.dataset.minutes || 0));
+        if (!Number.isFinite(mins) || mins <= 0) return;
+        const end = new Date();
+        const start = new Date(end.getTime() - mins * 60000);
+        latencyRange = { start, end };
+        if (latencyRangeStart) latencyRangeStart.value = toDateTimeLocalValue(start);
+        if (latencyRangeEnd) latencyRangeEnd.value = toDateTimeLocalValue(end);
+        setRangeActiveButton(btn);
+        await renderMetrics();
+      });
+    });
+  }
 
   refreshIntervalSelect.addEventListener('change', () => {
     const sec = Number(refreshIntervalSelect.value || 60);
