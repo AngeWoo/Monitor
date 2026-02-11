@@ -92,11 +92,20 @@
       <article class="panel">
         <div class="panel-header">
           <h2 id="latencyTitle">Latency (24h)</h2>
-          <select id="hoursSelect" class="select">
-            <option value="6">6 小時</option>
-            <option value="24" selected>24 小時</option>
-            <option value="72">72 小時</option>
-          </select>
+          <div class="row-actions latency-filters">
+            <select id="hoursSelect" class="select">
+              <option value="6">6 小時</option>
+              <option value="24" selected>24 小時</option>
+              <option value="72">72 小時</option>
+            </select>
+            <input id="latencyRangeStart" type="datetime-local" />
+            <input id="latencyRangeEnd" type="datetime-local" />
+            <button class="btn tiny secondary quick-range-btn" type="button" data-minutes="30">近30分</button>
+            <button class="btn tiny secondary quick-range-btn" type="button" data-minutes="60">近1小時</button>
+            <button class="btn tiny secondary quick-range-btn" type="button" data-minutes="180">近3小時</button>
+            <button id="applyLatencyRangeBtn" class="btn tiny secondary" type="button">套用區間</button>
+            <button id="clearLatencyRangeBtn" class="btn tiny secondary" type="button">清除</button>
+          </div>
         </div>
         <canvas id="latencyChart"></canvas>
       </article>
