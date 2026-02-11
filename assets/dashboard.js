@@ -8,6 +8,7 @@ const autoRefreshInfo = document.getElementById('autoRefreshInfo');
 const hoursSelect = document.getElementById('hoursSelect');
 const latencyTitle = document.getElementById('latencyTitle');
 const uptimeTitle = document.getElementById('uptimeTitle');
+const allLatencyTitle = document.getElementById('allLatencyTitle');
 const historyTitle = document.getElementById('historyTitle');
 const minuteHistoryHead = document.getElementById('minuteHistoryHead');
 const minuteHistoryBody = document.getElementById('minuteHistoryBody');
@@ -20,6 +21,7 @@ let services = [];
 let selectedId = null;
 let latencyChart;
 let uptimeChart;
+let allLatencyChart;
 let isLoading = false;
 let autoRefreshTimer = null;
 let countdownTimer = null;
@@ -237,6 +239,173 @@ function ensureCharts() {
       options: { responsive: true, maintainAspectRatio: false }
     });
   }
+
+  if (!allLatencyChart) {
+    const allLatencyCanvas = document.getElementById('allLatencyChart');
+    if (allLatencyCanvas) {
+      try {
+        allLatencyChart = new Chart(allLatencyCanvas, {
+          type: 'bar',
+          data: {
+            labels: [],
+            datasets: [
+              {
+                label: '正常次數',
+                data: [],
+                yAxisID: 'y',
+                backgroundColor: '#8cb0ff',
+                borderColor: '#5b83dd',
+                borderWidth: 1,
+                borderRadius: 6,
+                maxBarThickness: 30,
+                minBarLength: 4
+              },
+              {
+                label: '中斷次數(DOWN)',
+                data: [],
+                yAxisID: 'y',
+                backgroundColor: '#f3a39a',
+                borderColor: '#cc6f65',
+                borderWidth: 1,
+                borderRadius: 6,
+                maxBarThickness: 30,
+                minBarLength: 4
+              },
+              {
+                label: '平均 Latency(ms)',
+                type: 'line',
+                data: [],
+                yAxisID: 'y1',
+                backgroundColor: '#6ac8b955',
+                borderColor: '#2aa18f',
+                borderWidth: 2,
+                tension: 0.25,
+                pointRadius: 3,
+                pointHoverRadius: 4
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: true } },
+            scales: {
+              x: { stacked: true, ticks: { maxRotation: 45, minRotation: 0 } },
+              y: { stacked: true, beginAtZero: true, title: { display: true, text: '次數' } },
+              y1: {
+                beginAtZero: true,
+                position: 'right',
+                grid: { drawOnChartArea: false },
+                title: { display: true, text: 'Latency (ms)' }
+              }
+            }
+          }
+        });
+      } catch (err) {
+        if (allLatencyTitle) {
+          allLatencyTitle.textContent = `Latency 圖表初始化失敗: ${safeText(err?.message || err)}`;
+        }
+      }
+    }
+  }
+}
+
+async function renderAllLatencyStats() {
+  if (!allLatencyChart) ensureCharts();
+  if (!allLatencyChart || !allLatencyTitle) return;
+  if (!services.length) {
+    allLatencyTitle.textContent = '所有測試項目 Latency 統計 (0/0)';
+    allLatencyChart.data.labels = [];
+    allLatencyChart.data.datasets[0].data = [];
+    allLatencyChart.data.datasets[1].data = [];
+    allLatencyChart.data.datasets[2].data = [];
+    allLatencyChart.update();
+    return;
+  }
+
+  const entries = services.map((s, idx) => {
+    const latency = normalizeLatencyMs(s.last_latency_ms);
+    return {
+      id: s.id,
+      name: safeText(s.name) || `服務 ${idx + 1}`,
+      status: safeText(s.last_status),
+      latency,
+      value: latency ?? null,
+      sampleCount: 0,
+      downCount: 0,
+      testCount: 0,
+      okCount: 0
+    };
+  });
+
+  const metricsCandidates = entries.filter((item) => item.id);
+  if (metricsCandidates.length) {
+    const hours = Math.max(1, Number(hoursSelect?.value || 24));
+    const statsResults = await Promise.all(metricsCandidates.map(async (item) => {
+      try {
+        const result = await apiGet({ action: 'metrics', serviceId: item.id, hours });
+        const rows = result.data || [];
+        const values = rows
+          .map((r) => normalizeLatencyMs(r?.latency_ms))
+          .filter((v) => v !== null);
+
+        if (values.length) {
+          const avg = Math.round(values.reduce((sum, v) => sum + v, 0) / values.length);
+          const downCount = rows.filter((r) => safeText(r?.status) === 'DOWN').length;
+          return {
+            id: item.id,
+            avgLatency: avg,
+            sampleCount: values.length,
+            testCount: rows.length,
+            downCount,
+            okCount: Math.max(rows.length - downCount, 0)
+          };
+        }
+      } catch (_) {
+        // Keep default values when metrics fetch fails.
+      }
+      return {
+        id: item.id,
+        avgLatency: null,
+        sampleCount: 0,
+        testCount: 0,
+        downCount: 0,
+        okCount: 0
+      };
+    }));
+
+    const statsById = new Map(statsResults.map((r) => [r.id, r]));
+    entries.forEach((item) => {
+      const stats = statsById.get(item.id);
+      if (!stats) return;
+      if (stats.avgLatency !== null) {
+        item.latency = stats.avgLatency;
+        item.value = stats.avgLatency;
+        item.sampleCount = stats.sampleCount;
+        item.testCount = stats.testCount;
+        item.downCount = stats.downCount;
+        item.okCount = stats.okCount;
+        return;
+      }
+      if (item.value === null && item.latency !== null) {
+        item.value = item.latency;
+      }
+      item.okCount = Math.max((item.testCount || 0) - (item.downCount || 0), 0);
+    });
+  }
+
+  const hasLatencyCount = entries.filter((item) => item.latency !== null).length;
+  allLatencyTitle.textContent = hasLatencyCount
+    ? `所有測試項目 Latency 統計 (${hasLatencyCount}/${entries.length})`
+    : '所有測試項目 Latency 統計（目前無可用 latency 資料）';
+
+  allLatencyChart.data.labels = entries.map((item) => item.name);
+  allLatencyChart.data.datasets[0].data = entries.map((item) => item.okCount || 0);
+  allLatencyChart.data.datasets[1].data = entries.map((item) => item.downCount || 0);
+  allLatencyChart.data.datasets[2].data = entries.map((item) => (item.value ?? 0));
+  allLatencyChart.options.scales.y.suggestedMax = undefined;
+  allLatencyChart.options.scales.y1.suggestedMax = hasLatencyCount ? undefined : 10;
+  allLatencyChart.update();
 }
 
 async function renderMetrics() {
@@ -281,6 +450,7 @@ async function loadServices() {
 
     renderSummary();
     renderTable();
+    await renderAllLatencyStats();
     await renderMetrics();
   } finally {
     isLoading = false;
