@@ -1,13 +1,45 @@
-import { apiGet, apiPost, fmtDate, safeText, statusBadge } from './common.js';
+import { apiGet, apiPost, fmtDate, safeText, statusBadge } from './common.js?v=20260211-mail1';
 
 const summaryEl = document.getElementById('healthSummary');
 const staleBody = document.getElementById('staleBody');
 const healthMessage = document.getElementById('healthMessage');
 const refreshBtn = document.getElementById('refreshBtn');
 const runNowBtn = document.getElementById('runNowBtn');
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingLabel = document.getElementById('loadingLabel');
+const loadingPercent = document.getElementById('loadingPercent');
+const loadingBarInner = document.getElementById('loadingBarInner');
 
 let isLoading = false;
 let timer = null;
+let firstLoadPending = true;
+const CLICK_LOADING_MIN_MS = 380;
+
+function setLoadingOverlay(show) {
+  if (!loadingOverlay) return;
+  loadingOverlay.classList.toggle('hidden', !show);
+}
+
+function setLoadingProgress(percent, label) {
+  const p = Math.max(0, Math.min(100, Number(percent) || 0));
+  if (loadingPercent) loadingPercent.textContent = `${Math.round(p)}%`;
+  if (loadingBarInner) loadingBarInner.style.width = `${p}%`;
+  if (loadingLabel && label) loadingLabel.textContent = label;
+}
+
+async function runTransientLoading(label, task) {
+  const startedAt = Date.now();
+  setLoadingOverlay(true);
+  setLoadingProgress(10, label);
+  try {
+    await task((p) => setLoadingProgress(Math.max(10, Math.min(99, p)), label));
+    setLoadingProgress(100, '完成');
+  } finally {
+    const elapsed = Date.now() - startedAt;
+    const waitMs = Math.max(0, CLICK_LOADING_MIN_MS - elapsed);
+    window.setTimeout(() => setLoadingOverlay(false), waitMs);
+  }
+}
 
 function toDate(v) {
   if (!v) return null;
@@ -104,14 +136,16 @@ function renderStaleRows(rows) {
   `).join('');
 }
 
-async function loadHealth() {
+async function loadHealth(onProgress) {
   if (isLoading) return;
   isLoading = true;
   healthMessage.textContent = '檢查中...';
+  if (typeof onProgress === 'function') onProgress(10);
 
   try {
     const t0 = performance.now();
     const res = await apiGet({ action: 'listServices' });
+    if (typeof onProgress === 'function') onProgress(60);
     const apiLatencyMs = Math.round(performance.now() - t0);
 
     const services = res.data || [];
@@ -146,6 +180,7 @@ async function loadHealth() {
 
     const nowText = new Date().toLocaleTimeString('zh-TW', { hour12: false });
     healthMessage.textContent = `最後檢查：${nowText}（每 60 秒自動更新）`;
+    if (typeof onProgress === 'function') onProgress(100);
   } catch (err) {
     renderSummary({
       apiOk: false,
@@ -157,6 +192,7 @@ async function loadHealth() {
     });
     staleBody.innerHTML = '<tr><td colspan="6">無法讀取資料</td></tr>';
     healthMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
+    if (typeof onProgress === 'function') onProgress(100);
   } finally {
     isLoading = false;
   }
@@ -174,9 +210,39 @@ async function runNowAndCheck() {
   }
 }
 
-refreshBtn.addEventListener('click', loadHealth);
-runNowBtn.addEventListener('click', runNowAndCheck);
+async function handleRefreshWithOverlay() {
+  await runTransientLoading('重新整理中...', async (setP) => {
+    await loadHealth((p) => {
+      if (setP) setP(20 + p * 0.8);
+    });
+  });
+}
 
-loadHealth();
+async function handleRunNowWithOverlay() {
+  await runTransientLoading('觸發排程中...', async (setP) => {
+    if (setP) setP(35);
+    await runNowAndCheck();
+    if (setP) setP(100);
+  });
+}
+
+refreshBtn.addEventListener('click', handleRefreshWithOverlay);
+runNowBtn.addEventListener('click', handleRunNowWithOverlay);
+
+async function initFirstLoad() {
+  setLoadingOverlay(true);
+  setLoadingProgress(8, '讀取健康資料...');
+  try {
+    await loadHealth((p) => setLoadingProgress(p, '讀取健康資料...'));
+    setLoadingProgress(100, '載入完成');
+  } finally {
+    if (firstLoadPending) {
+      firstLoadPending = false;
+      window.setTimeout(() => setLoadingOverlay(false), 220);
+    }
+  }
+}
+
+initFirstLoad();
 if (timer) window.clearInterval(timer);
 timer = window.setInterval(loadHealth, 60000);

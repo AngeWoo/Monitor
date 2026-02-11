@@ -1,4 +1,4 @@
-import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge } from './common.js';
+import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge } from './common.js?v=20260211-mail1';
 
 const summaryEl = document.getElementById('summary');
 const tbody = document.getElementById('servicesBody');

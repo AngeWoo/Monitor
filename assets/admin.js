@@ -1,4 +1,4 @@
-import { apiGet, apiPost, safeText } from './common.js';
+import { apiGet, apiPost, safeText } from './common.js?v=20260211-mail1';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
@@ -12,8 +12,40 @@ const reloadReportBtn = document.getElementById('reloadReportBtn');
 const sendReportNowBtn = document.getElementById('sendReportNowBtn');
 const deleteTestDataForm = document.getElementById('deleteTestDataForm');
 const deleteTestDataMessage = document.getElementById('deleteTestDataMessage');
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingLabel = document.getElementById('loadingLabel');
+const loadingPercent = document.getElementById('loadingPercent');
+const loadingBarInner = document.getElementById('loadingBarInner');
 
 let services = [];
+let firstLoadPending = true;
+const CLICK_LOADING_MIN_MS = 380;
+
+function setLoadingOverlay(show) {
+  if (!loadingOverlay) return;
+  loadingOverlay.classList.toggle('hidden', !show);
+}
+
+function setLoadingProgress(percent, label) {
+  const p = Math.max(0, Math.min(100, Number(percent) || 0));
+  if (loadingPercent) loadingPercent.textContent = `${Math.round(p)}%`;
+  if (loadingBarInner) loadingBarInner.style.width = `${p}%`;
+  if (loadingLabel && label) loadingLabel.textContent = label;
+}
+
+async function runTransientLoading(label, task) {
+  const startedAt = Date.now();
+  setLoadingOverlay(true);
+  setLoadingProgress(10, label);
+  try {
+    await task((p) => setLoadingProgress(Math.max(10, Math.min(99, p)), label));
+    setLoadingProgress(100, '完成');
+  } finally {
+    const elapsed = Date.now() - startedAt;
+    const waitMs = Math.max(0, CLICK_LOADING_MIN_MS - elapsed);
+    window.setTimeout(() => setLoadingOverlay(false), waitMs);
+  }
+}
 
 function rowTemplate(s) {
   const enabled = String(s.enabled).toUpperCase() === 'TRUE';
@@ -36,12 +68,13 @@ function renderTable() {
   adminBody.innerHTML = services.map(rowTemplate).join('');
 }
 
-async function loadServices() {
+async function loadServices(onProgress) {
   adminMessage.textContent = '載入中...';
   const res = await apiGet({ action: 'listServices' });
   services = res.data || [];
   renderTable();
   adminMessage.textContent = '';
+  if (typeof onProgress === 'function') onProgress(100);
 }
 
 function formDataToPayload(id) {
@@ -123,6 +156,26 @@ async function handleRunNow() {
   }
 }
 
+async function handleReloadWithOverlay() {
+  await runTransientLoading('重新整理中...', async (setP) => {
+    if (setP) setP(25);
+    await loadServices((p) => {
+      if (setP) setP(25 + p * 0.75);
+    });
+  });
+}
+
+async function handleRunNowWithOverlay() {
+  await runTransientLoading('執行檢查中...', async (setP) => {
+    if (setP) setP(20);
+    await handleRunNow();
+    if (setP) setP(60);
+    await loadServices((p) => {
+      if (setP) setP(60 + p * 0.4);
+    });
+  });
+}
+
 function applyReportConfig(cfg) {
   if (!reportForm) return;
   reportForm.elements.recipients.value = safeText(cfg.recipients || '');
@@ -134,15 +187,17 @@ function applyReportConfig(cfg) {
   reportForm.elements.only_on_issue.checked = String(cfg.only_on_issue).toLowerCase() !== 'false';
 }
 
-async function loadReportConfig() {
+async function loadReportConfig(onProgress) {
   if (!reportMessage) return;
   reportMessage.textContent = '讀取郵件設定中...';
   try {
     const res = await apiGet({ action: 'getReportConfig' });
     applyReportConfig(res.data || {});
     reportMessage.textContent = '郵件設定已載入';
+    if (typeof onProgress === 'function') onProgress(100);
   } catch (err) {
     reportMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
+    if (typeof onProgress === 'function') onProgress(100);
   }
 }
 
@@ -207,8 +262,8 @@ async function handleDeleteTestData(e) {
   }
 }
 
-reloadBtn.addEventListener('click', loadServices);
-runNowBtn.addEventListener('click', handleRunNow);
+reloadBtn.addEventListener('click', handleReloadWithOverlay);
+runNowBtn.addEventListener('click', handleRunNowWithOverlay);
 addForm.addEventListener('submit', handleAdd);
 adminBody.addEventListener('click', handleTableClick);
 if (reportForm) reportForm.addEventListener('submit', handleSaveReport);
@@ -216,7 +271,23 @@ if (reloadReportBtn) reloadReportBtn.addEventListener('click', loadReportConfig)
 if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendReportNow);
 if (deleteTestDataForm) deleteTestDataForm.addEventListener('submit', handleDeleteTestData);
 
-loadServices().catch(err => {
-  adminMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
-});
-loadReportConfig();
+async function initFirstLoad() {
+  setLoadingOverlay(true);
+  setLoadingProgress(8, '讀取服務清單...');
+  try {
+    await Promise.all([
+      loadServices((p) => setLoadingProgress(8 + p * 0.62, '讀取服務清單...')),
+      loadReportConfig((p) => setLoadingProgress(70 + p * 0.28, '讀取郵件設定...'))
+    ]);
+    setLoadingProgress(100, '載入完成');
+  } catch (err) {
+    adminMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
+  } finally {
+    if (firstLoadPending) {
+      firstLoadPending = false;
+      window.setTimeout(() => setLoadingOverlay(false), 220);
+    }
+  }
+}
+
+initFirstLoad();
