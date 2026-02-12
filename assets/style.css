@@ -279,6 +279,13 @@ nav a.active {
   margin-bottom: 12px;
 }
 
+.all-availability-badge {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0a5c52;
+  white-space: nowrap;
+}
+
 .table-wrap {
   overflow-x: auto;
 }

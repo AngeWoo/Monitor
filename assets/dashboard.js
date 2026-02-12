@@ -13,6 +13,7 @@ const hoursSelect = document.getElementById('hoursSelect');
 const latencyTitle = document.getElementById('latencyTitle');
 const uptimeTitle = document.getElementById('uptimeTitle');
 const allLatencyTitle = document.getElementById('allLatencyTitle');
+const allAvailabilityBadge = document.getElementById('allAvailabilityBadge');
 const latencyRangeStart = document.getElementById('latencyRangeStart');
 const latencyRangeEnd = document.getElementById('latencyRangeEnd');
 const applyLatencyRangeBtn = document.getElementById('applyLatencyRangeBtn');
@@ -501,6 +502,7 @@ async function renderAllLatencyStats(onProgress) {
   if (!allLatencyChart || !allLatencyTitle) return;
   if (!services.length) {
     allLatencyTitle.textContent = '所有測試項目 Latency 統計 (0/0)';
+    if (allAvailabilityBadge) allAvailabilityBadge.textContent = '整體服務可用率: 0.0%';
     allLatencyChart.data.labels = [];
     allLatencyChart.data.datasets[0].data = [];
     allLatencyChart.data.datasets[1].data = [];
@@ -592,9 +594,17 @@ async function renderAllLatencyStats(onProgress) {
     if (!best || sample > best.sample) return { sample };
     return best;
   }, null);
+  const totalTests = entries.reduce((sum, item) => sum + Number(item.testCount || 0), 0);
+  const totalOk = entries.reduce((sum, item) => sum + Number(item.okCount || 0), 0);
+  const overallAvailability = totalTests > 0
+    ? `${((totalOk / totalTests) * 100).toFixed(1)}%`
+    : '0.0%';
   allLatencyTitle.textContent = hasLatencyCount
-    ? `所有測試項目 Latency 統計 (${hasLatencyCount}/${entries.length}) | 最大統計筆數: ${maxSampleEntry?.sample || 0}`
-    : '所有測試項目 Latency 統計（目前無可用 latency 資料）';
+    ? `所有測試項目 Latency 統計 (${hasLatencyCount}/${entries.length}) | 最大統計筆數: ${maxSampleEntry?.sample || 0} | 整體服務可用率: ${overallAvailability}`
+    : `所有測試項目 Latency 統計（目前無可用 latency 資料） | 整體服務可用率: ${overallAvailability}`;
+  if (allAvailabilityBadge) {
+    allAvailabilityBadge.textContent = `整體服務可用率: ${overallAvailability}`;
+  }
 
   allLatencyChart.data.labels = entries.map((item) => item.name);
   allLatencyChart.data.datasets[0].data = entries.map((item) => {
