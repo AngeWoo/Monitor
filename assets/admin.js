@@ -179,21 +179,25 @@ async function handleRunNowWithOverlay() {
 function applyReportConfig(cfg) {
   if (!reportForm) return;
   reportForm.elements.recipients.value = safeText(cfg.recipients || '');
+  reportForm.elements.notify_mode.value = safeText(cfg.notify_mode || 'mail');
   reportForm.elements.frequency.value = safeText(cfg.frequency || 'hourly');
   reportForm.elements.daily_hour.value = Number.isFinite(Number(cfg.daily_hour))
     ? Number(cfg.daily_hour)
     : 9;
   reportForm.elements.enabled.checked = String(cfg.enabled).toLowerCase() !== 'false';
   reportForm.elements.only_on_issue.checked = String(cfg.only_on_issue).toLowerCase() !== 'false';
+  reportForm.elements.line_channel_access_token.value = safeText(cfg.line_channel_access_token || '');
+  reportForm.elements.line_to.value = safeText(cfg.line_to || '');
+  reportForm.elements.teams_webhook_url.value = safeText(cfg.teams_webhook_url || '');
 }
 
 async function loadReportConfig(onProgress) {
   if (!reportMessage) return;
-  reportMessage.textContent = '讀取郵件設定中...';
+  reportMessage.textContent = '讀取通知設定中...';
   try {
     const res = await apiGet({ action: 'getReportConfig' });
     applyReportConfig(res.data || {});
-    reportMessage.textContent = '郵件設定已載入';
+    reportMessage.textContent = '通知設定已載入';
     if (typeof onProgress === 'function') onProgress(100);
   } catch (err) {
     reportMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
@@ -204,19 +208,48 @@ async function loadReportConfig(onProgress) {
 async function handleSaveReport(e) {
   e.preventDefault();
   reportMessage.textContent = '儲存中...';
+  const notifyMode = reportForm.elements.notify_mode.value;
+  const recipients = reportForm.elements.recipients.value.trim();
+  const lineToken = reportForm.elements.line_channel_access_token.value.trim();
+  const lineTo = reportForm.elements.line_to.value.trim();
+  const teamsWebhookUrl = reportForm.elements.teams_webhook_url.value.trim();
+  const needsMail = notifyMode !== 'line_only';
+
+  if (needsMail && !recipients) {
+    reportMessage.textContent = '儲存失敗: Mail 模式需填寫收件人';
+    return;
+  }
+
+  if ((notifyMode === 'mail_line' || notifyMode === 'all') && (!lineToken || !lineTo)) {
+    reportMessage.textContent = '儲存失敗: 啟用 LINE 模式時，請填寫 LINE Token 與 LINE To';
+    return;
+  }
+  if (notifyMode === 'line_only' && (!lineToken || !lineTo)) {
+    reportMessage.textContent = '儲存失敗: LINE-only 模式需填寫 LINE Token 與 LINE To';
+    return;
+  }
+  if ((notifyMode === 'mail_teams' || notifyMode === 'all') && !teamsWebhookUrl) {
+    reportMessage.textContent = '儲存失敗: 啟用 Teams 模式時，請填寫 Teams Webhook URL';
+    return;
+  }
+
   const payload = {
     action: 'updateReportConfig',
-    recipients: reportForm.elements.recipients.value,
+    recipients: recipients,
+    notify_mode: notifyMode,
     frequency: reportForm.elements.frequency.value,
     daily_hour: Number(reportForm.elements.daily_hour.value || 9),
     enabled: reportForm.elements.enabled.checked,
-    only_on_issue: reportForm.elements.only_on_issue.checked
+    only_on_issue: reportForm.elements.only_on_issue.checked,
+    line_channel_access_token: lineToken,
+    line_to: lineTo,
+    teams_webhook_url: teamsWebhookUrl
   };
 
   try {
     const res = await apiPost(payload);
     if (!res.ok) throw new Error(res.error || '儲存失敗');
-    reportMessage.textContent = '郵件設定已更新';
+    reportMessage.textContent = '通知設定已更新';
   } catch (err) {
     reportMessage.textContent = `儲存失敗: ${safeText(err.message)}`;
   }
@@ -227,7 +260,22 @@ async function handleSendReportNow() {
   try {
     const res = await apiPost({ action: 'sendReportNow' });
     if (!res.ok) throw new Error(res.error || '寄送失敗');
-    reportMessage.textContent = '已送出測試報告';
+    const channels = Array.isArray(res.channels) ? res.channels : [];
+    const sentChannels = channels.filter((c) => c?.sent).map((c) => c.channel).join(', ');
+    const failedChannelObjs = channels.filter((c) => !c?.sent);
+    const failedChannels = failedChannelObjs.map((c) => c.channel).join(', ');
+    const failedDetails = failedChannelObjs
+      .map((c) => `${c.channel}: ${safeText(c.error || c.skipped || 'failed')}`)
+      .join(' | ');
+    if (res.partial) {
+      reportMessage.textContent = `部分送達：成功(${sentChannels || '-'})，失敗(${failedChannels || '-'})；${failedDetails}`;
+      return;
+    }
+    if (failedChannelObjs.length) {
+      reportMessage.textContent = `未送達：${failedDetails}`;
+      return;
+    }
+    reportMessage.textContent = `已送出測試報告（${sentChannels || 'mail'}）`;
   } catch (err) {
     reportMessage.textContent = `寄送失敗: ${safeText(err.message)}`;
   }
@@ -277,7 +325,7 @@ async function initFirstLoad() {
   try {
     await Promise.all([
       loadServices((p) => setLoadingProgress(8 + p * 0.62, '讀取服務清單...')),
-      loadReportConfig((p) => setLoadingProgress(70 + p * 0.28, '讀取郵件設定...'))
+      loadReportConfig((p) => setLoadingProgress(70 + p * 0.28, '讀取通知設定...'))
     ]);
     setLoadingProgress(100, '載入完成');
   } catch (err) {

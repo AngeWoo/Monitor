@@ -479,15 +479,19 @@ canvas {
 }
 
 .report-col-frequency {
+  grid-column: 2;
+}
+
+.report-col-mode {
   grid-column: 1;
 }
 
 .report-col-daily-hour {
-  grid-column: 2;
+  grid-column: 3;
 }
 
 .report-col-options {
-  grid-column: 3;
+  grid-column: 4;
 }
 
 .report-col-submit {
@@ -622,6 +626,7 @@ label {
   }
 
   .report-col-frequency,
+  .report-col-mode,
   .report-col-daily-hour,
   .report-col-options,
   .report-col-submit {
