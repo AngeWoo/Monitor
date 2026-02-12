@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./assets/style.css?v=20260211-loading3" />
+  <link rel="stylesheet" href="./assets/style.css?v=20260212-notify1" />
 </head>
 <body>
   <div id="loadingOverlay" class="loading-overlay">
@@ -36,7 +36,7 @@
   <main class="container admin-grid">
     <section class="panel">
       <div class="panel-header">
-        <h2>狀態報告郵件</h2>
+        <h2>狀態報告通知</h2>
         <div class="row-actions">
           <button id="sendReportNowBtn" class="btn secondary" type="button">立即寄送測試報告</button>
           <button id="reloadReportBtn" class="btn" type="button">載入設定</button>
@@ -45,7 +45,17 @@
       <form id="reportForm" class="report-grid">
         <label class="field-span-all">
           收件人（可多位，逗號分隔）
-          <input required name="recipients" placeholder="ops@example.com, dev@example.com" />
+          <input name="recipients" placeholder="ops@example.com, dev@example.com" />
+        </label>
+        <label class="report-col-mode">
+          通知模式
+          <select name="notify_mode">
+            <option value="mail">只寄 Mail</option>
+            <option value="mail_line">Mail + LINE</option>
+            <option value="mail_teams">Mail + Teams</option>
+            <option value="all">Mail + LINE + Teams</option>
+            <option value="line_only">只發 LINE</option>
+          </select>
         </label>
         <label class="report-col-frequency">
           報告頻率
@@ -68,6 +78,18 @@
             <span>僅異常時寄送</span>
           </label>
         </div>
+        <label class="field-span-all">
+          LINE Channel Access Token（選填；模式含 LINE 時必填）
+          <input name="line_channel_access_token" placeholder="LINE Messaging API Channel Access Token" />
+        </label>
+        <label class="field-span-all">
+          LINE To（選填；模式含 LINE 時必填）
+          <input name="line_to" placeholder="可填單一ID、逗號分隔多個ID，或 JSON 陣列（例如 [\"U...\",\"U...\"]）" />
+        </label>
+        <label class="field-span-all">
+          Teams Webhook URL（選填；模式含 Teams 時必填）
+          <input name="teams_webhook_url" type="url" placeholder="https://..." />
+        </label>
         <div class="report-actions report-col-submit">
           <button class="btn report-save-btn" type="submit">儲存設定</button>
         </div>
@@ -135,6 +157,6 @@
     </section>
   </main>
 
-  <script type="module" src="./assets/admin.js?v=20260211-mail2"></script>
+  <script type="module" src="./assets/admin.js?v=20260212-notify4"></script>
 </body>
 </html>

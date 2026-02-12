@@ -13,6 +13,7 @@ const API_KEY = "";
 const PROP_REPORT_CONFIG = "REPORT_CONFIG";
 const PROP_REPORT_LAST_SLOT = "REPORT_LAST_SLOT";
 const PROP_DASHBOARD_URL = "DASHBOARD_URL";
+const PROP_LINE_TARGETS = "LINE_TARGETS";
 
 const TEST_DELETE_DEFAULT_SHEET = SHEET_CHECKS;
 
@@ -115,6 +116,12 @@ function doGet(e) {
       case "sendReportNow":
         result = sendStatusReportNow_();
         break;
+      case "debugLineTarget":
+        result = debugLineTarget_(p);
+        break;
+      case "getLineTargets":
+        result = { ok: true, data: getLineTargets_() };
+        break;
       default:
         result = { ok: false, error: "Unknown action" };
     }
@@ -129,13 +136,19 @@ function doGet(e) {
 function doPost(e) {
   try {
     const body = JSON.parse((e && e.postData && e.postData.contents) || "{}");
+    const params = (e && e.parameter) ? e.parameter : {};
+    const action = String((body && body.action) || params.action || "").trim();
+
+    // LINE webhook typically posts without API key; allow via dedicated action.
+    if (action === "lineWebhook") {
+      return jsonOut_(lineWebhook_(body));
+    }
 
     // 嘗試從前端請求動態更新 dashboard URL
     captureDashboardUrlFromPayload_(body);
 
     if (!authOk_(body)) return jsonOut_({ ok: false, error: "Unauthorized" });
 
-    const action = (body.action || "").trim();
     let result;
 
     switch (action) {
@@ -163,6 +176,12 @@ function doPost(e) {
         break;
       case "sendReportNow":
         result = sendStatusReportNow_();
+        break;
+      case "debugLineTarget":
+        result = debugLineTarget_(body);
+        break;
+      case "getLineTargets":
+        result = { ok: true, data: getLineTargets_() };
         break;
       default:
         result = { ok: false, error: "Unknown action" };
@@ -384,7 +403,17 @@ function deleteTestDataByDate_(payload) {
 
 /*************** Report Config ***************/
 function defaultReportConfig_() {
-  return { recipients: "", frequency: "hourly", daily_hour: 9, enabled: true, only_on_issue: true };
+  return {
+    recipients: "",
+    frequency: "hourly",
+    daily_hour: 9,
+    enabled: true,
+    only_on_issue: true,
+    notify_mode: "mail",
+    line_channel_access_token: "",
+    line_to: "",
+    teams_webhook_url: ""
+  };
 }
 
 function getReportConfig_() {
@@ -399,11 +428,17 @@ function getReportConfig_() {
 
 function normalizeReportConfig_(cfg) {
   const out = Object.assign({}, defaultReportConfig_(), cfg || {});
+  const mode = String(out.notify_mode || "").trim().toLowerCase();
+  const validModes = { mail: true, mail_line: true, mail_teams: true, all: true, line_only: true };
   out.frequency = out.frequency === "daily" ? "daily" : "hourly";
   out.daily_hour = Math.min(23, Math.max(0, toNum_(out.daily_hour, 9)));
   out.enabled = toBool_(out.enabled);
   out.only_on_issue = toBool_(out.only_on_issue);
   out.recipients = String(out.recipients || "").trim();
+  out.notify_mode = validModes[mode] ? mode : "mail";
+  out.line_channel_access_token = String(out.line_channel_access_token || "").trim();
+  out.line_to = normalizeLineToConfig_(out.line_to);
+  out.teams_webhook_url = String(out.teams_webhook_url || "").trim();
   return out;
 }
 
@@ -413,10 +448,27 @@ function updateReportConfig_(payload) {
     frequency: payload.frequency,
     daily_hour: payload.daily_hour,
     enabled: payload.enabled,
-    only_on_issue: payload.only_on_issue
+    only_on_issue: payload.only_on_issue,
+    notify_mode: payload.notify_mode,
+    line_channel_access_token: payload.line_channel_access_token,
+    line_to: payload.line_to,
+    teams_webhook_url: payload.teams_webhook_url
   });
 
-  if (!cfg.recipients) return { ok: false, error: "Recipients required" };
+  const needsMail = cfg.notify_mode !== "line_only";
+  if (needsMail && !cfg.recipients) return { ok: false, error: "Recipients required for mail mode" };
+  const lineTargets = parseLineTargets_(cfg.line_to);
+  if ((cfg.notify_mode === "mail_line" || cfg.notify_mode === "all") &&
+      (!cfg.line_channel_access_token || lineTargets.length === 0)) {
+    return { ok: false, error: "LINE mode requires line_channel_access_token and line_to" };
+  }
+  if (cfg.notify_mode === "line_only" && (!cfg.line_channel_access_token || lineTargets.length === 0)) {
+    return { ok: false, error: "LINE-only mode requires line_channel_access_token and line_to" };
+  }
+  if ((cfg.notify_mode === "mail_teams" || cfg.notify_mode === "all") &&
+      !cfg.teams_webhook_url) {
+    return { ok: false, error: "Teams mode requires teams_webhook_url" };
+  }
   PropertiesService.getScriptProperties().setProperty(PROP_REPORT_CONFIG, JSON.stringify(cfg));
   return { ok: true, data: cfg };
 }
@@ -470,8 +522,9 @@ function parseRecipients_(raw) {
 }
 
 function sendStatusReport_(cfg, forceSend, now) {
+  const sendMail = cfg.notify_mode !== "line_only";
   const recipients = parseRecipients_(cfg.recipients);
-  if (!recipients.length) return { ok: false, error: "No recipients configured" };
+  if (sendMail && !recipients.length) return { ok: false, error: "No recipients configured" };
 
   const services = (listServices_().data || []).filter((s) => toBool_(s.enabled));
   const issues = services.filter((s) => String(s.last_status || "").toUpperCase() !== "UP");
@@ -533,8 +586,287 @@ function sendStatusReport_(cfg, forceSend, now) {
 
   if (dashboardUrl) plain += `\n\nDashboard: ${dashboardUrl}`;
 
-  GmailApp.sendEmail(recipients.join(","), subject, plain, { htmlBody: htmlBody });
-  return { ok: true, sent: true, issues: issues.length };
+  const channels = [];
+  if (sendMail) {
+    let mailResult = { channel: "mail", sent: true };
+    try {
+      GmailApp.sendEmail(recipients.join(","), subject, plain, { htmlBody: htmlBody });
+    } catch (err) {
+      mailResult = { channel: "mail", sent: false, error: String(err) };
+    }
+    channels.push(mailResult);
+  }
+
+  const shouldSendLine = cfg.notify_mode === "mail_line" || cfg.notify_mode === "all" || cfg.notify_mode === "line_only";
+  const shouldSendTeams = cfg.notify_mode === "mail_teams" || cfg.notify_mode === "all";
+  const shouldDispatchExtraChannels = forceSend || issues.length > 0;
+
+  if (shouldDispatchExtraChannels && shouldSendLine) {
+    channels.push(callNotifierSafe_("line", function () {
+      return sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl);
+    }));
+  }
+  if (shouldDispatchExtraChannels && shouldSendTeams) {
+    channels.push(callNotifierSafe_("teams", function () {
+      return sendTeamsAlert_(cfg, subject, at, services, issues, dashboardUrl);
+    }));
+  }
+
+  const sentCount = channels.filter(function (c) { return c && c.sent; }).length;
+  const failedChannels = channels.filter(function (c) { return c && !c.sent && c.error; });
+  const hadMailQuotaError = failedChannels.some(function (c) {
+    return c.channel === "mail" && /次數過多|Limit exceeded|Service invoked too many times/i.test(String(c.error || ""));
+  });
+
+  return {
+    ok: sentCount > 0,
+    sent: sentCount > 0,
+    partial: sentCount > 0 && failedChannels.length > 0,
+    issues: issues.length,
+    channels: channels,
+    error: sentCount > 0 ? "" : (failedChannels[0] ? failedChannels[0].error : "All channels failed"),
+    warning: hadMailQuotaError ? "Mail quota exceeded, fallback channels were used." : ""
+  };
+}
+
+function callNotifierSafe_(channel, fn) {
+  try {
+    return fn();
+  } catch (err) {
+    return { channel: channel, sent: false, error: String(err) };
+  }
+}
+
+function buildAlertText_(subject, at, services, issues, dashboardUrl) {
+  const lines = [
+    subject,
+    `時間: ${at}`,
+    `啟用服務: ${services.length}`,
+    `異常數: ${issues.length}`
+  ];
+  if (issues.length) {
+    lines.push("異常服務:");
+    issues.slice(0, 10).forEach((s) => {
+      lines.push(`- ${s.name || s.url || "(未命名)"} | ${String(s.last_status || "UNKNOWN")} | HTTP ${String(s.last_http_code || "-")}`);
+    });
+    if (issues.length > 10) {
+      lines.push(`...其餘 ${issues.length - 10} 筆請看 Dashboard`);
+    }
+  } else {
+    lines.push("目前無異常服務");
+  }
+  if (dashboardUrl) lines.push(`Dashboard: ${dashboardUrl}`);
+  return lines.join("\n");
+}
+
+function sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl) {
+  const targets = parseLineTargets_(cfg.line_to);
+  if (!cfg.line_channel_access_token || targets.length === 0) {
+    return { channel: "line", sent: false, skipped: "LINE token/to 未設定" };
+  }
+
+  const text = truncateText_(buildAlertText_(subject, at, services, issues, dashboardUrl), 4800);
+  const results = targets.map(function (target) {
+    return sendLinePushSingle_(cfg.line_channel_access_token, target, text);
+  });
+  const successCount = results.filter(function (r) { return r && r.sent; }).length;
+  const failed = results.filter(function (r) { return !r || !r.sent; });
+
+  if (successCount === results.length) {
+    return { channel: "line", sent: true, target_count: results.length, results: results };
+  }
+  return {
+    channel: "line",
+    sent: successCount > 0,
+    partial: successCount > 0,
+    target_count: results.length,
+    success_count: successCount,
+    failed_count: failed.length,
+    results: results,
+    error: failed.length
+      ? failed.map(function (r) {
+          return `${r.target}: ${r.error || "failed"}`;
+        }).join(" | ")
+      : ""
+  };
+}
+
+function sendTeamsAlert_(cfg, subject, at, services, issues, dashboardUrl) {
+  if (!cfg.teams_webhook_url) {
+    return { channel: "teams", sent: false, skipped: "Teams webhook 未設定" };
+  }
+
+  const text = buildAlertText_(subject, at, services, issues, dashboardUrl);
+  const payload = {
+    title: subject,
+    text: text
+  };
+
+  const resp = UrlFetchApp.fetch(cfg.teams_webhook_url, {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+
+  const code = Number(resp.getResponseCode() || 0);
+  if (code >= 200 && code < 300) return { channel: "teams", sent: true };
+  return {
+    channel: "teams",
+    sent: false,
+    error: `Teams webhook 回應 ${code}: ${truncateText_(resp.getContentText() || "", 300)}`
+  };
+}
+
+function debugLineTarget_(payload) {
+  const cfg = getReportConfig_();
+  const overrideTo = (payload && Object.prototype.hasOwnProperty.call(payload, "line_to"))
+    ? payload.line_to
+    : "";
+  const targets = parseLineTargets_(overrideTo || cfg.line_to);
+  const token = String(cfg.line_channel_access_token || "").trim();
+
+  if (!token) return { ok: false, error: "LINE token 未設定 (line_channel_access_token)" };
+  if (!targets.length) return { ok: false, error: "LINE 目標未設定 (line_to)" };
+
+  const tz = Session.getScriptTimeZone();
+  const at = Utilities.formatDate(new Date(), tz, "yyyy-MM-dd HH:mm:ss");
+  const text = `LINE debug test ${at}`;
+  const results = targets.map(function (target) {
+    return sendLinePushSingle_(token, target, text);
+  });
+  const acceptedCount = results.filter(function (r) { return r && r.sent; }).length;
+  const accepted = acceptedCount > 0;
+
+  return {
+    ok: accepted,
+    action: "debugLineTarget",
+    accepted: accepted,
+    target_count: targets.length,
+    accepted_count: acceptedCount,
+    failed_count: targets.length - acceptedCount,
+    line_to: targets,
+    line_to_types: targets.map(function (t) { return { target: t, type: inferLineToType_(t) }; }),
+    token_preview: tokenPreview_(token),
+    notify_mode: cfg.notify_mode,
+    request_payload_preview: {
+      to: targets,
+      message_text: text
+    },
+    results: results,
+    trace: {
+      checked_at: at
+    }
+  };
+}
+
+function sendLinePushSingle_(token, target, text) {
+  const reqBody = {
+    to: target,
+    messages: [{ type: "text", text: text }]
+  };
+
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch("https://api.line.me/v2/bot/message/push", {
+      method: "post",
+      contentType: "application/json",
+      headers: { Authorization: "Bearer " + token },
+      payload: JSON.stringify(reqBody),
+      muteHttpExceptions: true
+    });
+  } catch (err) {
+    return {
+      target: target,
+      target_type: inferLineToType_(target),
+      sent: false,
+      status: 0,
+      error: "LINE API request failed: " + String(err)
+    };
+  }
+
+  const status = Number(resp.getResponseCode() || 0);
+  const bodyText = String(resp.getContentText() || "");
+  const headers = resp.getAllHeaders ? resp.getAllHeaders() : {};
+  const requestId = pickHeader_(headers, "x-line-request-id");
+  const sent = status >= 200 && status < 300;
+  return {
+    target: target,
+    target_type: inferLineToType_(target),
+    sent: sent,
+    status: status,
+    response_body: truncateText_(bodyText, 800),
+    response_headers: headers,
+    line_request_id: requestId || "",
+    error: sent ? "" : `LINE API 回應 ${status}: ${truncateText_(bodyText, 300)}`
+  };
+}
+
+function lineWebhook_(payload) {
+  const events = (payload && Array.isArray(payload.events)) ? payload.events : [];
+  if (!events.length) {
+    return { ok: true, received_events: 0, recorded: 0, data: getLineTargets_() };
+  }
+
+  const current = getLineTargets_();
+  const map = {};
+  current.forEach(function (item) {
+    if (!item || !item.target_id) return;
+    map[String(item.target_id)] = item;
+  });
+
+  var recorded = 0;
+  events.forEach(function (ev) {
+    const source = (ev && ev.source) || {};
+    const targetId = String(source.groupId || source.roomId || source.userId || "").trim();
+    if (!targetId) return;
+
+    const targetType = String(source.type || inferLineToType_(targetId));
+    const eventTs = Number(ev && ev.timestamp);
+    const updatedAt = Number.isFinite(eventTs) ? new Date(eventTs).toISOString() : new Date().toISOString();
+    const text = ev && ev.message && ev.message.type === "text"
+      ? truncateText_(String(ev.message.text || ""), 200)
+      : "";
+
+    map[targetId] = {
+      target_id: targetId,
+      target_type: targetType,
+      user_id: String(source.userId || ""),
+      group_id: String(source.groupId || ""),
+      room_id: String(source.roomId || ""),
+      last_event_type: String((ev && ev.type) || ""),
+      last_message_text: text,
+      updated_at: updatedAt
+    };
+    recorded += 1;
+  });
+
+  const merged = Object.keys(map).map(function (k) { return map[k]; });
+  merged.sort(function (a, b) {
+    const ta = new Date(a.updated_at || 0).getTime();
+    const tb = new Date(b.updated_at || 0).getTime();
+    return tb - ta;
+  });
+  const trimmed = merged.slice(0, 200);
+  PropertiesService.getScriptProperties().setProperty(PROP_LINE_TARGETS, JSON.stringify(trimmed));
+
+  return {
+    ok: true,
+    received_events: events.length,
+    recorded: recorded,
+    data: trimmed.slice(0, 20)
+  };
+}
+
+function getLineTargets_() {
+  const raw = PropertiesService.getScriptProperties().getProperty(PROP_LINE_TARGETS);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
 }
 
 /*************** Dashboard URL Capture ***************/
@@ -602,6 +934,47 @@ function normalizeYmd_(v, tz) {
   return m ? m[1] : "";
 }
 
+function normalizeLineToConfig_(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map(function (v) { return String(v || "").trim(); }).filter(function (v) { return v; }).join(",");
+  }
+  return String(raw || "").trim();
+}
+
+function parseLineTargets_(raw) {
+  if (Array.isArray(raw)) {
+    return dedupeLineTargets_(raw.map(function (v) { return String(v || "").trim(); }));
+  }
+
+  const text = String(raw || "").trim();
+  if (!text) return [];
+
+  if (text[0] === "[") {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        return dedupeLineTargets_(parsed.map(function (v) { return String(v || "").trim(); }));
+      }
+    } catch (_) {
+      // Fallback to delimiter parsing below.
+    }
+  }
+
+  const parts = text.split(/[\s,;]+/).map(function (s) { return s.trim(); });
+  return dedupeLineTargets_(parts);
+}
+
+function dedupeLineTargets_(items) {
+  const out = [];
+  const seen = {};
+  items.forEach(function (v) {
+    if (!v || seen[v]) return;
+    seen[v] = true;
+    out.push(v);
+  });
+  return out;
+}
+
 function indexMap_(header) {
   const m = {};
   header.forEach((h, i) => { m[String(h)] = i; });
@@ -638,4 +1011,37 @@ function escapeHtml_(s) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function truncateText_(s, maxLen) {
+  const text = String(s || "");
+  const limit = Math.max(1, Number(maxLen) || 1);
+  if (text.length <= limit) return text;
+  return text.slice(0, Math.max(0, limit - 3)) + "...";
+}
+
+function tokenPreview_(token) {
+  const t = String(token || "");
+  if (!t) return "";
+  if (t.length <= 10) return "***";
+  return t.slice(0, 6) + "..." + t.slice(-4);
+}
+
+function inferLineToType_(to) {
+  const s = String(to || "");
+  if (/^U[0-9a-fA-F]{10,}$/.test(s)) return "user";
+  if (/^C[0-9a-fA-F]{10,}$/.test(s)) return "group";
+  if (/^R[0-9a-fA-F]{10,}$/.test(s)) return "room";
+  return "unknown";
+}
+
+function pickHeader_(headers, key) {
+  if (!headers || !key) return "";
+  const target = String(key).toLowerCase();
+  const keys = Object.keys(headers);
+  for (var i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (String(k).toLowerCase() === target) return String(headers[k] || "");
+  }
+  return "";
 }
