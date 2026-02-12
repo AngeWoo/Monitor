@@ -282,8 +282,20 @@ nav a.active {
 .all-availability-badge {
   font-size: 0.95rem;
   font-weight: 700;
-  color: #0a5c52;
+  color: var(--text);
   white-space: nowrap;
+}
+
+.all-availability-badge.availability-good {
+  color: #177d3f;
+}
+
+.all-availability-badge.availability-warn {
+  color: #b38100;
+}
+
+.all-availability-badge.availability-bad {
+  color: #b43a2d;
 }
 
 .table-wrap {

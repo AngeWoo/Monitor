@@ -48,6 +48,19 @@ let firstLoadPending = true;
 let loadingShownAt = 0;
 const LOADING_MIN_SHOW_MS = 800;
 
+function updateAvailabilityBadge(availabilityText, availabilityValue) {
+  if (!allAvailabilityBadge) return;
+  allAvailabilityBadge.textContent = `整體服務可用率: ${availabilityText}`;
+  allAvailabilityBadge.classList.remove('availability-good', 'availability-warn', 'availability-bad');
+  if (availabilityValue > 99) {
+    allAvailabilityBadge.classList.add('availability-good');
+  } else if (availabilityValue >= 85 && availabilityValue <= 90) {
+    allAvailabilityBadge.classList.add('availability-warn');
+  } else if (availabilityValue < 85) {
+    allAvailabilityBadge.classList.add('availability-bad');
+  }
+}
+
 function parseDateTimeLocalValue(value) {
   if (!value) return null;
   const d = new Date(value);
@@ -502,7 +515,7 @@ async function renderAllLatencyStats(onProgress) {
   if (!allLatencyChart || !allLatencyTitle) return;
   if (!services.length) {
     allLatencyTitle.textContent = '所有測試項目 Latency 統計 (0/0)';
-    if (allAvailabilityBadge) allAvailabilityBadge.textContent = '整體服務可用率: 0.0%';
+    updateAvailabilityBadge('0.0%', 0);
     allLatencyChart.data.labels = [];
     allLatencyChart.data.datasets[0].data = [];
     allLatencyChart.data.datasets[1].data = [];
@@ -602,9 +615,7 @@ async function renderAllLatencyStats(onProgress) {
   allLatencyTitle.textContent = hasLatencyCount
     ? `所有測試項目 Latency 統計 (${hasLatencyCount}/${entries.length}) | 最大統計筆數: ${maxSampleEntry?.sample || 0} | 整體服務可用率: ${overallAvailability}`
     : `所有測試項目 Latency 統計（目前無可用 latency 資料） | 整體服務可用率: ${overallAvailability}`;
-  if (allAvailabilityBadge) {
-    allAvailabilityBadge.textContent = `整體服務可用率: ${overallAvailability}`;
-  }
+  updateAvailabilityBadge(overallAvailability, (totalOk / Math.max(totalTests, 1)) * 100);
 
   allLatencyChart.data.labels = entries.map((item) => item.name);
   allLatencyChart.data.datasets[0].data = entries.map((item) => {
