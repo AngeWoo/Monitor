@@ -122,6 +122,9 @@ function doGet(e) {
       case "getLineTargets":
         result = { ok: true, data: getLineTargets_() };
         break;
+      case "getLineTargetSummary":
+        result = { ok: true, data: getLineTargetSummary_() };
+        break;
       default:
         result = { ok: false, error: "Unknown action" };
     }
@@ -182,6 +185,9 @@ function doPost(e) {
         break;
       case "getLineTargets":
         result = { ok: true, data: getLineTargets_() };
+        break;
+      case "getLineTargetSummary":
+        result = { ok: true, data: getLineTargetSummary_() };
         break;
       default:
         result = { ok: false, error: "Unknown action" };
@@ -457,13 +463,12 @@ function updateReportConfig_(payload) {
 
   const needsMail = cfg.notify_mode !== "line_only";
   if (needsMail && !cfg.recipients) return { ok: false, error: "Recipients required for mail mode" };
-  const lineTargets = parseLineTargets_(cfg.line_to);
   if ((cfg.notify_mode === "mail_line" || cfg.notify_mode === "all") &&
-      (!cfg.line_channel_access_token || lineTargets.length === 0)) {
-    return { ok: false, error: "LINE mode requires line_channel_access_token and line_to" };
+      !cfg.line_channel_access_token) {
+    return { ok: false, error: "LINE mode requires line_channel_access_token" };
   }
-  if (cfg.notify_mode === "line_only" && (!cfg.line_channel_access_token || lineTargets.length === 0)) {
-    return { ok: false, error: "LINE-only mode requires line_channel_access_token and line_to" };
+  if (cfg.notify_mode === "line_only" && !cfg.line_channel_access_token) {
+    return { ok: false, error: "LINE-only mode requires line_channel_access_token" };
   }
   if ((cfg.notify_mode === "mail_teams" || cfg.notify_mode === "all") &&
       !cfg.teams_webhook_url) {
@@ -659,10 +664,37 @@ function buildAlertText_(subject, at, services, issues, dashboardUrl) {
   return lines.join("\n");
 }
 
+function getRecordedLineUserTargets_() {
+  const recorded = getLineTargets_();
+  const users = recorded
+    .map(function (item) {
+      const id = String((item && item.target_id) || "").trim();
+      if (!id) return "";
+      const type = String((item && (item.target_type || item.source_type)) || inferLineToType_(id)).toLowerCase();
+      return type === "user" ? id : "";
+    })
+    .filter(function (id) { return !!id; });
+  return dedupeLineTargets_(users);
+}
+
+function resolveLineNotifyTargets_(cfg, options) {
+  const opts = options || {};
+  const hasOverride = Object.prototype.hasOwnProperty.call(opts, "overrideTo");
+  const baseRaw = hasOverride ? opts.overrideTo : (cfg && cfg.line_to);
+  const configuredTargets = parseLineTargets_(baseRaw);
+  const includeRecordedUsers = opts.includeRecordedUsers !== false;
+  const recordedUsers = includeRecordedUsers ? getRecordedLineUserTargets_() : [];
+  return dedupeLineTargets_(recordedUsers.concat(configuredTargets));
+}
+
 function sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl) {
-  const targets = parseLineTargets_(cfg.line_to);
-  if (!cfg.line_channel_access_token || targets.length === 0) {
-    return { channel: "line", sent: false, skipped: "LINE token/to 未設定" };
+  if (!cfg.line_channel_access_token) {
+    return { channel: "line", sent: false, skipped: "LINE token 未設定" };
+  }
+
+  const targets = resolveLineNotifyTargets_(cfg);
+  if (!targets.length) {
+    return { channel: "line", sent: false, skipped: "尚無可通知的 LINE User（請先讓使用者對 Bot 發訊息）" };
   }
 
   const text = truncateText_(buildAlertText_(subject, at, services, issues, dashboardUrl), 4800);
@@ -673,13 +705,20 @@ function sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl) {
   const failed = results.filter(function (r) { return !r || !r.sent; });
 
   if (successCount === results.length) {
-    return { channel: "line", sent: true, target_count: results.length, results: results };
+    return {
+      channel: "line",
+      sent: true,
+      target_count: results.length,
+      user_target_count: targets.filter(function (t) { return inferLineToType_(t) === "user"; }).length,
+      results: results
+    };
   }
   return {
     channel: "line",
     sent: successCount > 0,
     partial: successCount > 0,
     target_count: results.length,
+    user_target_count: targets.filter(function (t) { return inferLineToType_(t) === "user"; }).length,
     success_count: successCount,
     failed_count: failed.length,
     results: results,
@@ -720,14 +759,15 @@ function sendTeamsAlert_(cfg, subject, at, services, issues, dashboardUrl) {
 
 function debugLineTarget_(payload) {
   const cfg = getReportConfig_();
-  const overrideTo = (payload && Object.prototype.hasOwnProperty.call(payload, "line_to"))
-    ? payload.line_to
-    : "";
-  const targets = parseLineTargets_(overrideTo || cfg.line_to);
+  const hasOverride = payload && Object.prototype.hasOwnProperty.call(payload, "line_to");
+  const targets = resolveLineNotifyTargets_(cfg, {
+    overrideTo: hasOverride ? payload.line_to : cfg.line_to,
+    includeRecordedUsers: !hasOverride
+  });
   const token = String(cfg.line_channel_access_token || "").trim();
 
   if (!token) return { ok: false, error: "LINE token 未設定 (line_channel_access_token)" };
-  if (!targets.length) return { ok: false, error: "LINE 目標未設定 (line_to)" };
+  if (!targets.length) return { ok: false, error: "尚無可通知的 LINE User（請先讓使用者對 Bot 發訊息）" };
 
   const tz = Session.getScriptTimeZone();
   const at = Utilities.formatDate(new Date(), tz, "yyyy-MM-dd HH:mm:ss");
@@ -867,6 +907,40 @@ function getLineTargets_() {
   } catch (_) {
     return [];
   }
+}
+
+function getLineTargetSummary_() {
+  const all = getLineTargets_();
+  const counts = {
+    user: 0,
+    group: 0,
+    room: 0,
+    unknown: 0
+  };
+
+  all.forEach(function (item) {
+    const id = String((item && item.target_id) || "").trim();
+    if (!id) return;
+    const type = String((item && (item.target_type || item.source_type)) || inferLineToType_(id)).toLowerCase();
+    if (type === "user") counts.user += 1;
+    else if (type === "group") counts.group += 1;
+    else if (type === "room") counts.room += 1;
+    else counts.unknown += 1;
+  });
+
+  const cfg = getReportConfig_();
+  const notifyTargets = resolveLineNotifyTargets_(cfg);
+  const notifyUserCount = notifyTargets.filter(function (t) { return inferLineToType_(t) === "user"; }).length;
+
+  return {
+    total: all.length,
+    user_count: counts.user,
+    group_count: counts.group,
+    room_count: counts.room,
+    unknown_count: counts.unknown,
+    notify_target_count: notifyTargets.length,
+    notify_user_count: notifyUserCount
+  };
 }
 
 /*************** Dashboard URL Capture ***************/

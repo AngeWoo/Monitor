@@ -83,9 +83,10 @@
           <input name="line_channel_access_token" placeholder="LINE Messaging API Channel Access Token" />
         </label>
         <label class="field-span-all">
-          LINE To（選填；模式含 LINE 時必填）
+          LINE To（選填；可留空，系統會自動發送給所有已記錄 User）
           <input name="line_to" placeholder="可填單一ID、逗號分隔多個ID，或 JSON 陣列（例如 [\"U...\",\"U...\"]）" />
         </label>
+        <p id="lineUserStats" class="message">Recorded LINE users: 0</p>
         <label class="field-span-all">
           Teams Webhook URL（選填；模式含 Teams 時必填）
           <input name="teams_webhook_url" type="url" placeholder="https://..." />
@@ -157,6 +158,6 @@
     </section>
   </main>
 
-  <script type="module" src="./assets/admin.js?v=20260212-notify4"></script>
+  <script type="module" src="./assets/admin.js?v=20260215-lineusers1"></script>
 </body>
 </html>
