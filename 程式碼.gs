@@ -543,6 +543,19 @@ function sendStatusReport_(cfg, forceSend, now) {
   const at = Utilities.formatDate(now, tz, "yyyy-MM-dd HH:mm:ss");
   const statusLabel = issues.length > 0 ? "ALERT" : "OK";
   const subject = `[Service Monitor][${statusLabel}] ${at}`;
+  const latencyValues = services
+    .map((s) => Number(s.last_latency_ms))
+    .filter((v) => Number.isFinite(v) && v >= 0);
+  const sortedLatency = latencyValues.slice().sort((a, b) => a - b);
+  const avgLatency = sortedLatency.length
+    ? Math.round(sortedLatency.reduce((sum, v) => sum + v, 0) / sortedLatency.length)
+    : null;
+  const p95Latency = sortedLatency.length
+    ? sortedLatency[Math.min(sortedLatency.length - 1, Math.floor((sortedLatency.length - 1) * 0.95))]
+    : null;
+  const minLatency = sortedLatency.length ? sortedLatency[0] : null;
+  const maxLatency = sortedLatency.length ? sortedLatency[sortedLatency.length - 1] : null;
+  const availabilityRate = services.length ? ((upCount / services.length) * 100).toFixed(1) : "0.0";
 
   const allRowsHtml = services.length
     ? services.map((s) => {
@@ -563,6 +576,21 @@ function sendStatusReport_(cfg, forceSend, now) {
   const dashboardHtml = dashboardUrl
     ? `<hr><p style="margin-top:12px;">Dashboard：<a href="${escapeHtml_(dashboardUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml_(dashboardUrl)}</a></p>`
     : "";
+  const dashboardBackLinkHtml = dashboardUrl
+    ? `<p style="margin-top:8px;"><a href="${escapeHtml_(dashboardUrl)}" target="_blank" rel="noopener noreferrer">點一下回到 Dashboard</a></p>`
+    : "";
+  const statsHtml =
+    `<h3>統計資料</h3>
+     <ul>
+       <li>啟用服務總數：${services.length}</li>
+       <li>正常：${upCount}</li>
+       <li>異常：${issues.length}</li>
+       <li>可用率：${availabilityRate}%</li>
+       <li>平均延遲：${avgLatency !== null ? avgLatency + " ms" : "N/A"}</li>
+       <li>P95 延遲：${p95Latency !== null ? p95Latency + " ms" : "N/A"}</li>
+       <li>最小延遲：${minLatency !== null ? minLatency + " ms" : "N/A"}</li>
+       <li>最大延遲：${maxLatency !== null ? maxLatency + " ms" : "N/A"}</li>
+     </ul>`;
 
   const htmlBody =
     `<h2>Service Monitor 狀態報告</h2>
@@ -571,7 +599,7 @@ function sendStatusReport_(cfg, forceSend, now) {
      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
        <thead><tr><th>服務</th><th>URL</th><th>狀態</th><th>HTTP</th><th>延遲(ms)</th><th>最後檢查</th><th>是否異常</th></tr></thead>
        <tbody>${allRowsHtml}</tbody>
-     </table>${dashboardHtml}`;
+     </table>${statsHtml}${dashboardHtml}${dashboardBackLinkHtml}`;
 
   const plainLines = services.map((s) => {
     const st = String(s.last_status || "UNKNOWN");
@@ -589,7 +617,18 @@ function sendStatusReport_(cfg, forceSend, now) {
     `所有服務列表:\n` +
     (plainLines.length ? plainLines.join("\n") : "(無啟用服務)");
 
-  if (dashboardUrl) plain += `\n\nDashboard: ${dashboardUrl}`;
+  plain +=
+    `\n\n=== 統計資料 ===\n` +
+    `可用率: ${availabilityRate}%\n` +
+    `平均延遲: ${avgLatency !== null ? avgLatency + " ms" : "N/A"}\n` +
+    `P95 延遲: ${p95Latency !== null ? p95Latency + " ms" : "N/A"}\n` +
+    `最小延遲: ${minLatency !== null ? minLatency + " ms" : "N/A"}\n` +
+    `最大延遲: ${maxLatency !== null ? maxLatency + " ms" : "N/A"}`;
+
+  if (dashboardUrl) {
+    plain += `\n\n點一下回到 Dashboard:`;
+    plain += `\n${dashboardUrl}`;
+  }
 
   const channels = [];
   if (sendMail) {
@@ -660,7 +699,11 @@ function buildAlertText_(subject, at, services, issues, dashboardUrl) {
   } else {
     lines.push("目前無異常服務");
   }
-  if (dashboardUrl) lines.push(`Dashboard: ${dashboardUrl}`);
+  if (dashboardUrl) {
+    lines.push("");
+    lines.push("點一下回到 Dashboard:");
+    lines.push(dashboardUrl);
+  }
   return lines.join("\n");
 }
 
