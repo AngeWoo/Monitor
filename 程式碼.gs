@@ -125,6 +125,18 @@ function doGet(e) {
       case "getLineTargetSummary":
         result = { ok: true, data: getLineTargetSummary_() };
         break;
+      case "getChecksDateRange":
+        result = getChecksDateRange_();
+        break;
+      case "getChecksDates":
+        result = getChecksDates_();
+        break;
+      case "hardDeleteService":
+        result = hardDeleteService_(p.id);
+        break;
+      case "metricsAll":
+        result = metricsAll_(toNum_(p.hours, 24));
+        break;
       default:
         result = { ok: false, error: "Unknown action" };
     }
@@ -188,6 +200,18 @@ function doPost(e) {
         break;
       case "getLineTargetSummary":
         result = { ok: true, data: getLineTargetSummary_() };
+        break;
+      case "getChecksDateRange":
+        result = getChecksDateRange_();
+        break;
+      case "getChecksDates":
+        result = getChecksDates_();
+        break;
+      case "hardDeleteService":
+        result = hardDeleteService_(body.id);
+        break;
+      case "metricsAll":
+        result = metricsAll_(toNum_(body.hours, 24));
         break;
       default:
         result = { ok: false, error: "Unknown action" };
@@ -310,6 +334,20 @@ function deleteService_(id) {
   return updateService_({ id: id, enabled: false });
 }
 
+function hardDeleteService_(id) {
+  if (!id) return { ok: false, error: "Missing id" };
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+  var values = sh.getDataRange().getValues();
+  if (values.length < 2) return { ok: false, error: "Not found" };
+  var idx = indexMap_(values[0]);
+  for (var r = 1; r < values.length; r++) {
+    if (String(values[r][idx.id]) !== String(id)) continue;
+    sh.deleteRow(r + 1);
+    return { ok: true };
+  }
+  return { ok: false, error: "Not found" };
+}
+
 function listServices_() {
   const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
   const values = sh.getDataRange().getValues();
@@ -340,6 +378,30 @@ function getMetrics_(serviceId, hours) {
   }));
 
   return { ok: true, data: data };
+}
+
+function metricsAll_(hours) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_CHECKS);
+  var values = sh.getDataRange().getValues();
+  if (values.length < 2) return { ok: true, data: {} };
+  var idx = indexMap_(values[0]);
+  var since = Date.now() - Math.max(1, toNum_(hours, 24)) * 3600 * 1000;
+  var grouped = {};
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var ts = new Date(row[idx.timestamp]).getTime();
+    if (ts < since) continue;
+    var sid = String(row[idx.service_id]);
+    if (!grouped[sid]) grouped[sid] = [];
+    grouped[sid].push({
+      timestamp: row[idx.timestamp],
+      status: row[idx.status],
+      http_code: row[idx.http_code],
+      latency_ms: row[idx.latency_ms],
+      error: row[idx.error]
+    });
+  }
+  return { ok: true, data: grouped };
 }
 
 function appendCheckLog_(serviceId, result) {
@@ -393,6 +455,7 @@ function deleteTestDataByDate_(payload) {
   if (matchedDateCount > 0) {
     sh.clearContents();
     sh.getRange(1, 1, kept.length, header.length).setValues(kept);
+    invalidateChecksDateCache_();
   }
 
   return {
@@ -405,6 +468,88 @@ function deleteTestDataByDate_(payload) {
       deleted_count: matchedDateCount
     }
   };
+}
+
+/*************** Checks Date Helpers ***************/
+var CACHE_KEY_DATES = 'checks_dates_v1';
+var CACHE_TTL_DATES = 300; // 5 minutes
+
+function invalidateChecksDateCache_() {
+  try { CacheService.getScriptCache().remove(CACHE_KEY_DATES); } catch (_) {}
+}
+
+function getChecksDatesFromSheet_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_CHECKS);
+  if (!sh) return null;
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return { minDate: null, maxDate: null, dates: [] };
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx = indexMap_(header);
+  if (idx.timestamp === undefined) return null;
+  var tsColIdx = idx.timestamp + 1;
+  var tsValues = sh.getRange(2, tsColIdx, lastRow - 1, 1).getValues();
+  var tz = Session.getScriptTimeZone();
+  var dateMap = {};
+  var fmtCache = {}; // hourly bucket → ymd string (limits Utilities.formatDate calls)
+  var minDate = null;
+  var maxDate = null;
+  for (var r = 0; r < tsValues.length; r++) {
+    var v = tsValues[r][0];
+    if (!v) continue;
+    var ms;
+    if (Object.prototype.toString.call(v) === '[object Date]') {
+      ms = v.getTime();
+    } else if (typeof v === 'number' && Number.isFinite(v)) {
+      ms = Math.round((v - 25569) * 86400 * 1000);
+    } else {
+      ms = new Date(String(v)).getTime();
+    }
+    if (!ms || isNaN(ms)) continue;
+    // Cache by hour bucket — safe for all UTC offsets, ~24 Utilities.formatDate calls/day max
+    var hourKey = Math.floor(ms / 3600000);
+    if (!(hourKey in fmtCache)) {
+      fmtCache[hourKey] = Utilities.formatDate(new Date(ms), tz, 'yyyy-MM-dd');
+    }
+    var ymd = fmtCache[hourKey];
+    if (!ymd) continue;
+    if (!dateMap[ymd]) {
+      dateMap[ymd] = true;
+      if (!minDate || ymd < minDate) minDate = ymd;
+      if (!maxDate || ymd > maxDate) maxDate = ymd;
+    }
+  }
+  var dates = Object.keys(dateMap).sort().reverse();
+  return { minDate: minDate, maxDate: maxDate, dates: dates };
+}
+
+function getChecksDateRange_() {
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get(CACHE_KEY_DATES);
+  if (cached) {
+    try {
+      var p = JSON.parse(cached);
+      return { ok: true, data: { minDate: p.minDate, maxDate: p.maxDate } };
+    } catch (_) {}
+  }
+  var result = getChecksDatesFromSheet_();
+  if (!result) return { ok: false, error: 'Sheet not found or missing timestamp column' };
+  try { cache.put(CACHE_KEY_DATES, JSON.stringify(result), CACHE_TTL_DATES); } catch (_) {}
+  return { ok: true, data: { minDate: result.minDate, maxDate: result.maxDate } };
+}
+
+function getChecksDates_() {
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get(CACHE_KEY_DATES);
+  if (cached) {
+    try {
+      var p = JSON.parse(cached);
+      return { ok: true, data: { dates: p.dates } };
+    } catch (_) {}
+  }
+  var result = getChecksDatesFromSheet_();
+  if (!result) return { ok: false, error: 'Sheet not found or missing timestamp column' };
+  try { cache.put(CACHE_KEY_DATES, JSON.stringify(result), CACHE_TTL_DATES); } catch (_) {}
+  return { ok: true, data: { dates: result.dates } };
 }
 
 /*************** Report Config ***************/
@@ -1036,17 +1181,17 @@ function toBool_(v) {
 function normalizeYmd_(v, tz) {
   if (v === null || v === undefined || v === "") return "";
   if (Object.prototype.toString.call(v) === "[object Date]" && !isNaN(v.getTime())) {
-    return v.getFullYear() + "-" + String(v.getMonth() + 1).padStart(2, "0") + "-" + String(v.getDate()).padStart(2, "0");
+    return Utilities.formatDate(v, tz, "yyyy-MM-dd");
   }
   if (typeof v === "number" && Number.isFinite(v)) {
     const ms = Math.round((v - 25569) * 86400 * 1000);
     const d = new Date(ms);
-    if (!isNaN(d.getTime())) return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    if (!isNaN(d.getTime())) return Utilities.formatDate(d, tz, "yyyy-MM-dd");
   }
   const s = String(v).trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   const d2 = new Date(s);
-  if (!isNaN(d2.getTime())) return d2.getFullYear() + "-" + String(d2.getMonth() + 1).padStart(2, "0") + "-" + String(d2.getDate()).padStart(2, "0");
+  if (!isNaN(d2.getTime())) return Utilities.formatDate(d2, tz, "yyyy-MM-dd");
   const m = s.match(/(\d{4}-\d{2}-\d{2})/);
   return m ? m[1] : "";
 }
