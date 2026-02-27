@@ -1,4 +1,4 @@
-import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge } from './common.js?v=20260227-cache1';
+import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge } from './common.js?v=20260227-mobile1';
 
 const summaryEl = document.getElementById('summary');
 const tbody = document.getElementById('servicesBody');
@@ -263,11 +263,11 @@ function renderMinuteHistoryPage() {
     const rowClass = hasIssue ? 'history-alert-row' : '';
     return `
       <tr class="${rowClass}">
-        <td>${fmtDate(r.minute)}</td>
-        <td>${r.upCount}</td>
-        <td>${r.downCount}</td>
-        <td>${avgLatency}</td>
-        <td>${r.lastHttp}</td>
+        <td data-label="分鐘">${fmtDate(r.minute)}</td>
+        <td data-label="UP">${r.upCount}</td>
+        <td data-label="DOWN">${r.downCount}</td>
+        <td data-label="延遲">${avgLatency}</td>
+        <td data-label="HTTP">${r.lastHttp}</td>
       </tr>`;
   }).join('');
   updateHistoryPager(sorted.length);
@@ -326,18 +326,18 @@ function renderTable() {
     const latencyMs = normalizeLatencyMs(s.last_latency_ms);
     return `
       <tr class="${rowClass}">
-        <td>${safeText(s.name)}</td>
-        <td>
+        <td data-label="名稱">${safeText(s.name)}</td>
+        <td data-label="URL">
           <a class="url-ellipsis" href="${safeText(s.url)}" target="_blank" rel="noreferrer" title="${safeText(s.url)}">
             ${safeText(s.url)}
           </a>
         </td>
-        <td>${statusBadge(s.last_status)}</td>
-        <td>${safeText(s.last_http_code) || '-'}</td>
-        <td>${latencyMs ?? '-'}</td>
-        <td>${safeText(s.interval_min) || '-'}</td>
-        <td>${fmtDate(s.last_check_at)}</td>
-        <td><button class="btn tiny" data-id="${safeText(s.id)}">查看</button></td>
+        <td data-label="狀態">${statusBadge(s.last_status)}</td>
+        <td data-label="HTTP">${safeText(s.last_http_code) || '-'}</td>
+        <td data-label="延遲">${latencyMs ?? '-'}</td>
+        <td data-label="頻率">${safeText(s.interval_min) || '-'}</td>
+        <td data-label="最後檢查">${fmtDate(s.last_check_at)}</td>
+        <td data-label=""><button class="btn tiny" data-id="${safeText(s.id)}">查看</button></td>
       </tr>`;
   }).join('');
 }

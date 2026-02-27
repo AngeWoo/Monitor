@@ -639,6 +639,10 @@ label {
   .latency-filters {
     justify-content: flex-start;
   }
+
+  .latency-filters input[type="datetime-local"] {
+    width: 170px;
+  }
 }
 
 @media (max-width: 760px) {
@@ -671,7 +675,7 @@ label {
 @media (max-width: 620px) {
   .container,
   .topbar {
-    width: 94vw;
+    width: 96vw;
   }
 
   nav {
@@ -681,13 +685,242 @@ label {
   nav a {
     flex: 1;
     text-align: center;
+    padding: 8px 6px;
+    font-size: 0.88rem;
   }
 
+  h1 {
+    font-size: 1.25rem;
+  }
+
+  .topbar p {
+    font-size: 0.82rem;
+  }
+
+  .panel {
+    padding: 12px;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  .panel-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .row-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* ---- 4 cards per row on mobile ---- */
   .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 7px;
   }
 
+  .summary-grid .metric {
+    padding: 9px 7px;
+    border-radius: 10px;
+  }
+
+  .summary-grid .metric p {
+    font-size: 0.68rem;
+    margin-bottom: 3px;
+  }
+
+  .summary-grid .metric strong {
+    font-size: 1rem;
+  }
+
+  .summary-grid .metric-range-value {
+    font-size: 0.72rem;
+  }
+
+  /* ---- Contain overflow at container level ---- */
+  .container {
+    overflow-x: hidden;
+  }
+
+  /* ---- Tables → Card view on mobile ---- */
+  .table-wrap {
+    overflow-x: auto;
+  }
+
+  table {
+    min-width: 0 !important;
+    display: block;
+  }
+
+  table thead {
+    display: none;
+  }
+
+  table tbody {
+    display: block;
+  }
+
+  table tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    background: #fff;
+    transition: none;
+    box-shadow: 0 2px 8px rgba(50, 64, 91, 0.06);
+  }
+
+  table tbody tr:hover {
+    background: #f6faff;
+  }
+
+  table tbody tr.selected-row {
+    background: #ecf7ff;
+  }
+
+  table tbody td {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 5px 0;
+    border: none;
+    border-bottom: 1px solid #eff1f6;
+    font-size: 0.87rem;
+    vertical-align: unset;
+  }
+
+  table tbody td:last-child {
+    border-bottom: none;
+    padding-bottom: 3px;
+  }
+
+  table tbody td::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    width: 72px;
+    min-width: 72px;
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+  }
+
+  table tbody td[data-label=""]::before,
+  table tbody td:not([data-label])::before {
+    display: none;
+    width: 0;
+    min-width: 0;
+  }
+
+  /* inputs and links fill remaining space in flex td */
+  table tbody td > input:not([type="checkbox"]),
+  table tbody td > .url-ellipsis {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+  }
+
+  /* Fix: checkbox must keep its natural size, not stretch full-width */
+  table tbody td > input[type="checkbox"] {
+    width: auto;
+    min-width: 0;
+    flex: 0 0 auto;
+    transform: scale(1.2);
+  }
+
+  /* URL: allow wrapping on mobile; top-align label against multi-line URL */
   .url-ellipsis {
-    max-width: 180px;
+    max-width: none;
+    white-space: normal;
+    word-break: break-all;
+    overflow: visible;
+    text-overflow: unset;
+  }
+
+  table tbody td[data-label="URL"] {
+    align-items: flex-start;
+  }
+
+  /* Admin: button cells go side-by-side at the bottom of each card */
+  #adminServicesBody td:nth-child(n+5) {
+    width: auto;
+    border-bottom: none;
+    padding: 6px 4px 4px 0;
+    flex: 0 0 auto;
+  }
+
+  #adminServicesBody td:nth-child(n+5)::before {
+    display: none;
+  }
+
+  /* First button cell: visual separator line above button group */
+  #adminServicesBody td:nth-child(5) {
+    border-top: 1px solid var(--line);
+    margin-top: 4px;
+    padding-top: 8px;
+  }
+
+  /* Fix: interval number input — cap width, no need to be full-width */
+  #adminServicesBody td:nth-child(3) > input[type="number"] {
+    flex: 0 0 auto;
+    width: 84px;
+  }
+
+  /* ---- Charts: shorter on small screens ---- */
+  canvas {
+    min-height: 190px;
+    max-height: 230px;
+  }
+
+  /* ---- Latency filter controls ---- */
+  .latency-filters {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .latency-filters input[type="datetime-local"] {
+    width: 100%;
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+
+  /* ---- Hint text: allow wrapping ---- */
+  .hint {
+    white-space: normal;
+  }
+
+  /* ---- Admin: full-width save button ---- */
+  .report-save-btn {
+    min-width: 0;
+    width: 100%;
+  }
+
+  /* ---- Admin: report form selects + inputs — full width, natural height ---- */
+  .report-grid select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .report-grid select,
+  .report-grid input:not([type="checkbox"]) {
+    height: auto;
+    padding: 10px 12px;
+    line-height: normal;
+  }
+
+  /* ---- Admin: delete/add-service danger + submit buttons full-width ---- */
+  .test-data-grid .btn,
+  .form-grid .btn {
+    width: 100%;
+  }
+
+  /* ---- Admin: line user stats text wrap ---- */
+  #lineUserStats {
+    white-space: normal;
+    word-break: break-all;
   }
 }

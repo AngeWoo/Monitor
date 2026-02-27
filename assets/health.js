@@ -1,4 +1,4 @@
-import { apiGet, apiPost, fmtDate, safeText, statusBadge } from './common.js?v=20260211-mail1';
+import { apiGet, apiPost, fmtDate, safeText, statusBadge } from './common.js?v=20260227-mobile1';
 
 const summaryEl = document.getElementById('healthSummary');
 const staleBody = document.getElementById('staleBody');
@@ -126,12 +126,12 @@ function renderStaleRows(rows) {
 
   staleBody.innerHTML = rows.map(({ service, check }) => `
     <tr>
-      <td>${safeText(service.name)}</td>
-      <td>${check.intervalMin}</td>
-      <td>${check.lastCheck ? fmtDate(check.lastCheck) : '-'}</td>
-      <td>${check.nextCheck ? fmtDate(check.nextCheck) : '-'}</td>
-      <td>${statusBadge(service.last_status)}</td>
-      <td>${safeText(check.reason)}</td>
+      <td data-label="服務">${safeText(service.name)}</td>
+      <td data-label="頻率">${check.intervalMin}</td>
+      <td data-label="最後檢查">${check.lastCheck ? fmtDate(check.lastCheck) : '-'}</td>
+      <td data-label="下次檢查">${check.nextCheck ? fmtDate(check.nextCheck) : '-'}</td>
+      <td data-label="狀態">${statusBadge(service.last_status)}</td>
+      <td data-label="判定">${safeText(check.reason)}</td>
     </tr>
   `).join('');
 }

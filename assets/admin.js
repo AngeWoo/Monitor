@@ -1,4 +1,4 @@
-import { apiGet, apiPost, safeText } from './common.js?v=20260227-cache1';
+import { apiGet, apiPost, safeText } from './common.js?v=20260227-mobile1';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
@@ -15,6 +15,10 @@ const deleteTestDataMessage = document.getElementById('deleteTestDataMessage');
 const deleteTestDataDateSelect = document.getElementById('deleteTestDataDateSelect');
 const deleteTestDataDatesInfo = document.getElementById('deleteTestDataDatesInfo');
 const reloadDeleteDatesBtn = document.getElementById('reloadDeleteDatesBtn');
+const deleteTestDataSubmitBtn = document.getElementById('deleteTestDataSubmitBtn');
+const deleteProgressWrap = document.getElementById('deleteProgressWrap');
+const deleteProgressBar = document.getElementById('deleteProgressBar');
+const deleteProgressPct = document.getElementById('deleteProgressPct');
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingLabel = document.getElementById('loadingLabel');
 const loadingPercent = document.getElementById('loadingPercent');
@@ -58,6 +62,40 @@ function populateDateSelect(dates) {
     : '<option value="">（無資料）</option>';
 }
 
+let _deleteProgressTimer = null;
+let _deleteProgressValue = 0;
+
+function _setDeleteProgressUI(pct) {
+  if (deleteProgressBar) deleteProgressBar.style.width = `${pct}%`;
+  if (deleteProgressPct) deleteProgressPct.textContent = `${pct}%`;
+}
+
+function startDeleteProgress() {
+  _deleteProgressValue = 0;
+  _setDeleteProgressUI(0);
+  if (deleteProgressWrap) deleteProgressWrap.classList.remove('hidden');
+  if (deleteTestDataSubmitBtn) deleteTestDataSubmitBtn.disabled = true;
+  if (deleteTestDataMessage) deleteTestDataMessage.textContent = '';
+  _deleteProgressTimer = window.setInterval(() => {
+    _deleteProgressValue += (82 - _deleteProgressValue) * 0.07;
+    _setDeleteProgressUI(Math.min(82, Math.round(_deleteProgressValue)));
+  }, 400);
+}
+
+function finishDeleteProgress(success) {
+  if (_deleteProgressTimer) { window.clearInterval(_deleteProgressTimer); _deleteProgressTimer = null; }
+  if (deleteTestDataSubmitBtn) deleteTestDataSubmitBtn.disabled = false;
+  if (success) {
+    _setDeleteProgressUI(100);
+    window.setTimeout(() => {
+      if (deleteProgressWrap) deleteProgressWrap.classList.add('hidden');
+    }, 900);
+  } else {
+    if (deleteProgressWrap) deleteProgressWrap.classList.add('hidden');
+    _setDeleteProgressUI(0);
+  }
+}
+
 function setLoadingOverlay(show) {
   if (!loadingOverlay) return;
   loadingOverlay.classList.toggle('hidden', !show);
@@ -88,10 +126,10 @@ function rowTemplate(s) {
   const enabled = String(s.enabled).toUpperCase() === 'TRUE';
   return `
     <tr>
-      <td><input data-field="name" data-id="${safeText(s.id)}" value="${safeText(s.name)}" /></td>
-      <td><input data-field="url" data-id="${safeText(s.id)}" value="${safeText(s.url)}" /></td>
-      <td><input data-field="interval_min" data-id="${safeText(s.id)}" type="number" min="1" max="1440" value="${safeText(s.interval_min || 5)}" /></td>
-      <td><input data-field="enabled" data-id="${safeText(s.id)}" type="checkbox" ${enabled ? 'checked' : ''} /></td>
+      <td data-label="名稱"><input data-field="name" data-id="${safeText(s.id)}" value="${safeText(s.name)}" /></td>
+      <td data-label="URL"><input data-field="url" data-id="${safeText(s.id)}" value="${safeText(s.url)}" /></td>
+      <td data-label="頻率"><input data-field="interval_min" data-id="${safeText(s.id)}" type="number" min="1" max="1440" value="${safeText(s.interval_min || 5)}" /></td>
+      <td data-label="啟用"><input data-field="enabled" data-id="${safeText(s.id)}" type="checkbox" ${enabled ? 'checked' : ''} /></td>
       <td><button class="btn tiny" data-action="save" data-id="${safeText(s.id)}">儲存</button></td>
       <td><button class="btn tiny danger" data-action="disable" data-id="${safeText(s.id)}">停用</button></td>
       <td><button class="btn tiny danger" data-action="remove" data-id="${safeText(s.id)}" data-name="${safeText(s.name)}">刪除</button></td>
@@ -369,20 +407,21 @@ async function handleDeleteTestData(e) {
   const confirmed = window.confirm(`確定要刪除 ${date} 的測試資料嗎？此操作無法復原。`);
   if (!confirmed) return;
 
-  deleteTestDataMessage.textContent = '刪除中...（資料量大時需較長時間，請耐心等候）';
+  startDeleteProgress();
   try {
-    // Use 3-minute timeout to handle large datasets
-    const res = await apiPost({ action: 'deleteTestDataByDate', date }, 180000);
+    // Use 5-minute timeout to handle large datasets
+    const res = await apiPost({ action: 'deleteTestDataByDate', date }, 300000);
     if (!res.ok) throw new Error(res.error || '刪除失敗');
 
     const removedCount = Number(res.data?.deleted_count);
+    finishDeleteProgress(true);
     deleteTestDataMessage.textContent = Number.isFinite(removedCount)
       ? `刪除完成，共刪除 ${removedCount} 筆`
       : '刪除完成';
-    // Reload date list to reflect the deletion
     clearChecksDatesCache();
     await loadChecksDates(true);
   } catch (err) {
+    finishDeleteProgress(false);
     deleteTestDataMessage.textContent = `刪除失敗: ${safeText(err.message)}`;
   }
 }
