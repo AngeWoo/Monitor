@@ -614,6 +614,47 @@ label {
   font-weight: 600;
 }
 
+/* ---- Scroll FAB (floating scroll buttons) ---- */
+.fab-wrap {
+  position: fixed;
+  bottom: 20px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fab {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(15, 123, 108, 0.88);
+  color: #fff;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(50, 64, 91, 0.28);
+  backdrop-filter: blur(6px);
+  transition: opacity 220ms ease, transform 220ms ease, background 150ms ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.fab:hover {
+  background: rgba(10, 92, 82, 0.96);
+  transform: scale(1.08);
+}
+
+.fab.fab--hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.72);
+}
+
 @media (max-width: 980px) {
   .summary-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));

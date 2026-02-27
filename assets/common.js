@@ -124,3 +124,46 @@ export function statusBadge(status) {
   if (status === "DOWN") return '<span class="badge down">DOWN</span>';
   return '<span class="badge unknown">UNKNOWN</span>';
 }
+
+// ---- Scroll FAB (floating scroll-to-top / scroll-to-bottom buttons) ----
+function createScrollFab() {
+  const wrap = document.createElement('div');
+  wrap.className = 'fab-wrap';
+
+  const fabTop = document.createElement('button');
+  fabTop.className = 'fab fab--hidden';
+  fabTop.title = '回頂端';
+  fabTop.setAttribute('aria-label', '回頂端');
+  fabTop.textContent = '▲';
+
+  const fabBottom = document.createElement('button');
+  fabBottom.className = 'fab fab--hidden';
+  fabBottom.title = '到底部';
+  fabBottom.setAttribute('aria-label', '到底部');
+  fabBottom.textContent = '▼';
+
+  wrap.appendChild(fabTop);
+  wrap.appendChild(fabBottom);
+  document.body.appendChild(wrap);
+
+  function updateVisibility() {
+    const scrollTop = window.scrollY;
+    const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+    fabTop.classList.toggle('fab--hidden', scrollTop < 60);
+    fabBottom.classList.toggle('fab--hidden', maxScroll < 1 || scrollTop >= maxScroll - 30);
+  }
+
+  fabTop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  fabBottom.addEventListener('click', () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }));
+
+  window.addEventListener('scroll', updateVisibility, { passive: true });
+  window.addEventListener('resize', updateVisibility, { passive: true });
+  // Recheck after dynamic content may have loaded
+  setTimeout(updateVisibility, 300);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', createScrollFab);
+} else {
+  createScrollFab();
+}
