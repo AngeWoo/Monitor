@@ -1,4 +1,4 @@
-import { apiGet, apiPost, safeText } from './common.js?v=20260227-mobile1';
+import { apiGet, apiPost, safeText } from './common.js?v=20260227-fab1';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
