@@ -420,52 +420,87 @@ function appendCheckLog_(serviceId, result) {
 
 /*************** Delete By Date (ignore is_test) ***************/
 function deleteTestDataByDate_(payload) {
-  const date = String((payload && payload.date) || "").trim();
+  var date = String((payload && payload.date) || "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return { ok: false, error: "Invalid date, expected YYYY-MM-DD" };
   }
 
-  const sheetName = String((payload && payload.sheet) || TEST_DELETE_DEFAULT_SHEET).trim();
-  const sh = SpreadsheetApp.getActive().getSheetByName(sheetName);
+  var sheetName = String((payload && payload.sheet) || TEST_DELETE_DEFAULT_SHEET).trim();
+  var sh = SpreadsheetApp.getActive().getSheetByName(sheetName);
   if (!sh) return { ok: false, error: "Sheet not found: " + sheetName };
 
-  const values = sh.getDataRange().getValues();
-  if (values.length < 2) {
-    return { ok: true, data: { date, sheet: sheetName, mode: "all_by_date", matched_date_count: 0, deleted_count: 0 } };
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) {
+    return { ok: true, data: { date: date, sheet: sheetName, mode: "all_by_date", matched_date_count: 0, deleted_count: 0 } };
   }
 
-  const header = values[0];
-  const idx = indexMap_(header);
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx = indexMap_(header);
   if (idx.timestamp === undefined) return { ok: false, error: "Missing timestamp column in checks sheet" };
 
-  const tz = Session.getScriptTimeZone();
-  const kept = [header];
-  let matchedDateCount = 0;
+  // Read ONLY the timestamp column — 6x less data than full sheet read
+  var tsColIdx = idx.timestamp + 1;
+  var tsValues = sh.getRange(2, tsColIdx, lastRow - 1, 1).getValues();
+  var tz = Session.getScriptTimeZone();
+  var fmtCache = {};
+  var rowsToDelete = []; // 1-based sheet row indices
 
-  for (let r = 1; r < values.length; r++) {
-    const row = values[r];
-    const ymd = normalizeYmd_(row[idx.timestamp], tz);
-    if (ymd === date) {
-      matchedDateCount++;
+  for (var r = 0; r < tsValues.length; r++) {
+    var v = tsValues[r][0];
+    if (!v) continue;
+    var ms;
+    if (Object.prototype.toString.call(v) === '[object Date]') {
+      ms = v.getTime();
+    } else if (typeof v === 'number' && Number.isFinite(v)) {
+      ms = Math.round((v - 25569) * 86400 * 1000);
     } else {
-      kept.push(row);
+      ms = new Date(String(v)).getTime();
+    }
+    if (!ms || isNaN(ms)) continue;
+    var hourKey = Math.floor(ms / 3600000);
+    if (!(hourKey in fmtCache)) {
+      fmtCache[hourKey] = Utilities.formatDate(new Date(ms), tz, 'yyyy-MM-dd');
+    }
+    if (fmtCache[hourKey] === date) {
+      rowsToDelete.push(r + 2); // offset r is 0-based from row 2, so sheet row = r+2
     }
   }
 
-  if (matchedDateCount > 0) {
-    sh.clearContents();
-    sh.getRange(1, 1, kept.length, header.length).setValues(kept);
-    invalidateChecksDateCache_();
+  if (rowsToDelete.length === 0) {
+    return { ok: true, data: { date: date, sheet: sheetName, mode: "all_by_date", matched_date_count: 0, deleted_count: 0 } };
   }
+
+  // Group consecutive rows into ranges to minimise deleteRows() API calls
+  rowsToDelete.sort(function(a, b) { return a - b; });
+  var groups = [];
+  var gStart = rowsToDelete[0];
+  var gEnd = rowsToDelete[0];
+  for (var i = 1; i < rowsToDelete.length; i++) {
+    if (rowsToDelete[i] === gEnd + 1) {
+      gEnd = rowsToDelete[i];
+    } else {
+      groups.push({ start: gStart, count: gEnd - gStart + 1 });
+      gStart = rowsToDelete[i];
+      gEnd = rowsToDelete[i];
+    }
+  }
+  groups.push({ start: gStart, count: gEnd - gStart + 1 });
+
+  // Delete from bottom to top so row indices remain valid
+  for (var g = groups.length - 1; g >= 0; g--) {
+    sh.deleteRows(groups[g].start, groups[g].count);
+  }
+
+  invalidateChecksDateCache_();
 
   return {
     ok: true,
     data: {
-      date,
+      date: date,
       sheet: sheetName,
       mode: "all_by_date",
-      matched_date_count: matchedDateCount,
-      deleted_count: matchedDateCount
+      matched_date_count: rowsToDelete.length,
+      deleted_count: rowsToDelete.length
     }
   };
 }
