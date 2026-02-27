@@ -73,13 +73,13 @@ function jsonpRequest(params, timeoutMs = 60000) {
   });
 }
 
-export async function apiGet(params) {
-  return jsonpRequest(params);
+export async function apiGet(params, timeoutMs) {
+  return jsonpRequest(params, timeoutMs);
 }
 
-export async function apiPost(payload) {
+export async function apiPost(payload, timeoutMs) {
   // For JSONP mode, POST actions are tunneled through query params.
-  return jsonpRequest(payload);
+  return jsonpRequest(payload, timeoutMs);
 }
 
 export function fmtDate(value) {

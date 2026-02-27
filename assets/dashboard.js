@@ -1,4 +1,4 @@
-import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge } from './common.js?v=20260211-mail1';
+import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge } from './common.js?v=20260227-cache1';
 
 const summaryEl = document.getElementById('summary');
 const tbody = document.getElementById('servicesBody');
@@ -47,6 +47,12 @@ let latencyRange = { start: null, end: null };
 let firstLoadPending = true;
 let loadingShownAt = 0;
 const LOADING_MIN_SHOW_MS = 800;
+let checksDataMinDate = null;
+let checksDataMaxDate = null;
+let batchMetricsCache = null;
+let batchMetricsHours = null;
+let batchMetricsLoadedAt = 0;
+const BATCH_METRICS_TTL_MS = 55 * 1000;
 
 function updateAvailabilityBadge(availabilityText, availabilityValue) {
   if (!allAvailabilityBadge) return;
@@ -283,7 +289,9 @@ function renderSummary() {
     { label: '目前 UP', value: up },
     { label: '目前 DOWN', value: down },
     { label: '可用率', value: availability },
-    { label: '日期起訖', value: rangeText, isRange: true }
+    { label: '日期起訖', value: rangeText, isRange: true },
+    { label: '最早資料日期', value: checksDataMinDate || '-' },
+    { label: '最晚資料日期', value: checksDataMaxDate || '-' }
   ].map(item => `
     <article class="metric">
       <p>${item.label}</p>
@@ -292,6 +300,19 @@ function renderSummary() {
         : `<strong>${item.value}</strong>`}
     </article>
   `).join('');
+}
+
+async function loadChecksDateRange() {
+  try {
+    const res = await apiGet({ action: 'getChecksDateRange' });
+    if (res.ok && res.data) {
+      checksDataMinDate = res.data.minDate || null;
+      checksDataMaxDate = res.data.maxDate || null;
+      renderSummary();
+    }
+  } catch (_) {
+    // Date range is optional, silently ignore errors
+  }
 }
 
 function renderTable() {
@@ -510,6 +531,22 @@ function ensureCharts() {
   }
 }
 
+async function fetchMetricsAll(hours) {
+  const now = Date.now();
+  if (
+    batchMetricsCache !== null &&
+    batchMetricsHours === hours &&
+    now - batchMetricsLoadedAt < BATCH_METRICS_TTL_MS
+  ) {
+    return batchMetricsCache;
+  }
+  const result = await apiGet({ action: 'metricsAll', hours });
+  batchMetricsCache = (result.ok && result.data) ? result.data : {};
+  batchMetricsHours = hours;
+  batchMetricsLoadedAt = Date.now();
+  return batchMetricsCache;
+}
+
 async function renderAllLatencyStats(onProgress) {
   if (!allLatencyChart) ensureCharts();
   if (!allLatencyChart || !allLatencyTitle) return;
@@ -543,45 +580,37 @@ async function renderAllLatencyStats(onProgress) {
   const metricsCandidates = entries.filter((item) => item.id);
   if (metricsCandidates.length) {
     const hours = Math.max(1, Number(hoursSelect?.value || 24));
-    let done = 0;
-    const total = metricsCandidates.length;
-    const statsResults = await Promise.all(metricsCandidates.map(async (item) => {
-      try {
-        const result = await apiGet({ action: 'metrics', serviceId: item.id, hours });
-        const rows = result.data || [];
-        const values = rows
-          .map((r) => normalizeLatencyMs(r?.latency_ms))
-          .filter((v) => v !== null);
+    const allMetrics = await fetchMetricsAll(hours);
+    if (onProgress) onProgress(100);
 
-        if (values.length) {
-          const avg = Math.round(values.reduce((sum, v) => sum + v, 0) / values.length);
-          const downCount = rows.filter((r) => safeText(r?.status) === 'DOWN').length;
-          return {
-            id: item.id,
-            avgLatency: avg,
-            sampleCount: values.length,
-            testCount: rows.length,
-            downCount,
-            okCount: Math.max(rows.length - downCount, 0)
-          };
-        }
-      } catch (_) {
-        // Keep default values when metrics fetch fails.
+    const statsById = new Map();
+    metricsCandidates.forEach((item) => {
+      const rows = allMetrics[item.id] || [];
+      const values = rows
+        .map((r) => normalizeLatencyMs(r?.latency_ms))
+        .filter((v) => v !== null);
+      if (values.length) {
+        const avg = Math.round(values.reduce((sum, v) => sum + v, 0) / values.length);
+        const downCount = rows.filter((r) => safeText(r?.status) === 'DOWN').length;
+        statsById.set(item.id, {
+          id: item.id,
+          avgLatency: avg,
+          sampleCount: values.length,
+          testCount: rows.length,
+          downCount,
+          okCount: Math.max(rows.length - downCount, 0)
+        });
+      } else {
+        statsById.set(item.id, {
+          id: item.id,
+          avgLatency: null,
+          sampleCount: 0,
+          testCount: 0,
+          downCount: 0,
+          okCount: 0
+        });
       }
-      return {
-        id: item.id,
-        avgLatency: null,
-        sampleCount: 0,
-        testCount: 0,
-        downCount: 0,
-        okCount: 0
-      };
-    }).map((promise) => promise.finally(() => {
-      done += 1;
-      if (onProgress) onProgress((done / total) * 100);
-    })));
-
-    const statsById = new Map(statsResults.map((r) => [r.id, r]));
+    });
     entries.forEach((item) => {
       const stats = statsById.get(item.id);
       if (!stats) return;
@@ -648,23 +677,9 @@ async function renderMetrics(onProgress) {
     rawRows = (result.data || []).map((r) => ({ ...r, _serviceId: selectedId }));
     if (onProgress) onProgress(100);
   } else {
-    const allTargets = services.slice();
-    let done = 0;
-    const total = Math.max(1, allTargets.length);
-    const allResults = await Promise.all(
-      allTargets.map(async (s) => {
-        try {
-          const result = await apiGet({ action: 'metrics', serviceId: s.id, hours });
-          return (result.data || []).map((r) => ({ ...r, _serviceId: s.id }));
-        } catch (_) {
-          return [];
-        } finally {
-          done += 1;
-          if (onProgress) onProgress((done / total) * 100);
-        }
-      })
-    );
-    rawRows = allResults.flat();
+    const allMetrics = await fetchMetricsAll(hours);
+    if (onProgress) onProgress(100);
+    rawRows = services.flatMap((s) => (allMetrics[s.id] || []).map((r) => ({ ...r, _serviceId: s.id })));
   }
 
   rawRows.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
@@ -733,6 +748,8 @@ async function loadServices() {
 
     renderSummary();
     renderTable();
+    // Fire-and-forget: load actual earliest/latest data dates from checks sheet
+    loadChecksDateRange();
     if (firstLoadPending) setLoadingProgress(35, '載入所有測試項目統計...');
     await renderAllLatencyStats(firstLoadPending ? (p) => setLoadingProgress(35 + p * 0.35, '載入所有測試項目統計...') : null);
     if (firstLoadPending) setLoadingProgress(72, '載入 Latency / Uptime...');

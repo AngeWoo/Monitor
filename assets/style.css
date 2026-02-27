@@ -201,39 +201,53 @@ nav a.active {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   gap: 12px;
+  overflow-x: auto;
 }
 
 .metric {
-  background: linear-gradient(150deg, #fff9ee, #f3fbff);
-  border: 1px solid #eef0f4;
+  background: linear-gradient(160deg, #fff9ee, #f3fbff);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-bottom: 2px solid rgba(0, 0, 0, 0.08);
   border-radius: 14px;
-  padding: 14px;
+  padding: 14px 16px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.88) inset,
+    0 4px 0 rgba(0, 0, 0, 0.05),
+    0 8px 22px rgba(50, 64, 91, 0.12);
 }
 
 .summary-grid .metric:nth-child(1) {
-  background: linear-gradient(150deg, #fff4e8, #ffe8cf);
+  background: linear-gradient(160deg, #fff5e6 0%, #ffd48a 100%);
 }
 
 .summary-grid .metric:nth-child(2) {
-  background: linear-gradient(150deg, #edf7ff, #d7ecff);
+  background: linear-gradient(160deg, #e8f3ff 0%, #a8ccef 100%);
 }
 
 .summary-grid .metric:nth-child(3) {
-  background: linear-gradient(150deg, #eefcf1, #d9f5df);
+  background: linear-gradient(160deg, #e5f9ee 0%, #8cdcad 100%);
 }
 
 .summary-grid .metric:nth-child(4) {
-  background: linear-gradient(150deg, #fff0f0, #ffdcdc);
+  background: linear-gradient(160deg, #fff0ee 0%, #f5aaa8 100%);
 }
 
 .summary-grid .metric:nth-child(5) {
-  background: linear-gradient(150deg, #f8f0ff, #eadbff);
+  background: linear-gradient(160deg, #f4eeff 0%, #c0a0f5 100%);
 }
 
 .summary-grid .metric:nth-child(6) {
-  background: linear-gradient(150deg, #f7f6e9, #eee8c8);
+  background: linear-gradient(160deg, #fef8e0 0%, #f5d670 100%);
+}
+
+.summary-grid .metric:nth-child(7) {
+  background: linear-gradient(160deg, #e2f7f8 0%, #78cdd3 100%);
+}
+
+.summary-grid .metric:nth-child(8) {
+  background: linear-gradient(160deg, #edf0ff 0%, #99aaf0 100%);
 }
 
 .metric p {
@@ -462,9 +476,20 @@ canvas {
 
 .test-data-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 320px) auto;
+  grid-template-columns: minmax(150px, 240px) minmax(150px, 190px) auto;
   gap: 12px;
   align-items: end;
+}
+
+.test-data-grid select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
 }
 
 .report-grid {
@@ -591,7 +616,7 @@ label {
 
 @media (max-width: 980px) {
   .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .charts-grid {
@@ -659,7 +684,7 @@ label {
   }
 
   .summary-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .url-ellipsis {

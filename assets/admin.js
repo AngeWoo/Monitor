@@ -1,4 +1,4 @@
-import { apiGet, apiPost, safeText } from './common.js?v=20260211-mail1';
+import { apiGet, apiPost, safeText } from './common.js?v=20260227-cache1';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
@@ -12,6 +12,9 @@ const reloadReportBtn = document.getElementById('reloadReportBtn');
 const sendReportNowBtn = document.getElementById('sendReportNowBtn');
 const deleteTestDataForm = document.getElementById('deleteTestDataForm');
 const deleteTestDataMessage = document.getElementById('deleteTestDataMessage');
+const deleteTestDataDateSelect = document.getElementById('deleteTestDataDateSelect');
+const deleteTestDataDatesInfo = document.getElementById('deleteTestDataDatesInfo');
+const reloadDeleteDatesBtn = document.getElementById('reloadDeleteDatesBtn');
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingLabel = document.getElementById('loadingLabel');
 const loadingPercent = document.getElementById('loadingPercent');
@@ -20,6 +23,40 @@ const loadingBarInner = document.getElementById('loadingBarInner');
 let services = [];
 let firstLoadPending = true;
 const CLICK_LOADING_MIN_MS = 380;
+const DATES_CACHE_KEY = 'monitor_checks_dates_v1';
+const DATES_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function loadCachedDates() {
+  try {
+    const raw = localStorage.getItem(DATES_CACHE_KEY);
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (Date.now() - entry.ts > DATES_CACHE_TTL_MS) {
+      localStorage.removeItem(DATES_CACHE_KEY);
+      return null;
+    }
+    return Array.isArray(entry.dates) ? entry.dates : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveCachedDates(dates) {
+  try {
+    localStorage.setItem(DATES_CACHE_KEY, JSON.stringify({ ts: Date.now(), dates }));
+  } catch (_) {}
+}
+
+function clearChecksDatesCache() {
+  try { localStorage.removeItem(DATES_CACHE_KEY); } catch (_) {}
+}
+
+function populateDateSelect(dates) {
+  if (!deleteTestDataDateSelect) return;
+  deleteTestDataDateSelect.innerHTML = dates.length
+    ? '<option value="">-- 選擇日期 --</option>' + dates.map(d => `<option value="${safeText(d)}">${safeText(d)}</option>`).join('')
+    : '<option value="">（無資料）</option>';
+}
 
 function setLoadingOverlay(show) {
   if (!loadingOverlay) return;
@@ -57,12 +94,13 @@ function rowTemplate(s) {
       <td><input data-field="enabled" data-id="${safeText(s.id)}" type="checkbox" ${enabled ? 'checked' : ''} /></td>
       <td><button class="btn tiny" data-action="save" data-id="${safeText(s.id)}">儲存</button></td>
       <td><button class="btn tiny danger" data-action="disable" data-id="${safeText(s.id)}">停用</button></td>
+      <td><button class="btn tiny danger" data-action="remove" data-id="${safeText(s.id)}" data-name="${safeText(s.name)}">刪除</button></td>
     </tr>`;
 }
 
 function renderTable() {
   if (!services.length) {
-    adminBody.innerHTML = '<tr><td colspan="6">尚無服務</td></tr>';
+    adminBody.innerHTML = '<tr><td colspan="7">尚無服務</td></tr>';
     return;
   }
   adminBody.innerHTML = services.map(rowTemplate).join('');
@@ -137,6 +175,16 @@ async function handleTableClick(e) {
       const res = await apiPost({ action: 'deleteService', id });
       if (!res.ok) throw new Error(res.error || '停用失敗');
       adminMessage.textContent = '已停用';
+    }
+
+    if (btn.dataset.action === 'remove') {
+      const name = btn.dataset.name || id;
+      const confirmed = window.confirm(`確定要永久刪除服務「${name}」嗎？此操作無法復原，相關監控記錄不受影響。`);
+      if (!confirmed) return;
+      adminMessage.textContent = '刪除中...';
+      const res = await apiPost({ action: 'hardDeleteService', id });
+      if (!res.ok) throw new Error(res.error || '刪除失敗');
+      adminMessage.textContent = '已刪除';
     }
 
     await loadServices();
@@ -281,30 +329,59 @@ async function handleSendReportNow() {
   }
 }
 
+async function loadChecksDates(forceRefresh) {
+  if (!deleteTestDataDateSelect) return;
+  if (!forceRefresh) {
+    const cached = loadCachedDates();
+    if (cached) {
+      populateDateSelect(cached);
+      if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = `共 ${cached.length} 個日期（快取）`;
+      return;
+    }
+  }
+  if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = '載入可用日期中...';
+  try {
+    const res = await apiGet({ action: 'getChecksDates' }, 120000);
+    const dates = (res.ok && res.data && Array.isArray(res.data.dates)) ? res.data.dates : [];
+    saveCachedDates(dates);
+    populateDateSelect(dates);
+    if (deleteTestDataDatesInfo) {
+      deleteTestDataDatesInfo.textContent = dates.length ? `共 ${dates.length} 個日期` : '目前無資料';
+    }
+  } catch (err) {
+    if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = `載入失敗: ${safeText(err.message)}`;
+    if (deleteTestDataDateSelect) deleteTestDataDateSelect.innerHTML = '<option value="">（載入失敗）</option>';
+  }
+}
+
 async function handleDeleteTestData(e) {
   e.preventDefault();
   if (!deleteTestDataForm || !deleteTestDataMessage) return;
 
-  const date = deleteTestDataForm.elements.date.value;
+  const dateFromSelect = deleteTestDataDateSelect?.value?.trim() || '';
+  const dateFromInput = (deleteTestDataForm.elements.date_manual?.value || '').trim();
+  const date = dateFromSelect || dateFromInput;
   if (!date) {
-    deleteTestDataMessage.textContent = '請先選擇日期';
+    deleteTestDataMessage.textContent = '請先從下拉選擇日期，或手動輸入日期';
     return;
   }
 
   const confirmed = window.confirm(`確定要刪除 ${date} 的測試資料嗎？此操作無法復原。`);
   if (!confirmed) return;
 
-  deleteTestDataMessage.textContent = '刪除中...';
+  deleteTestDataMessage.textContent = '刪除中...（資料量大時需較長時間，請耐心等候）';
   try {
-    const res = await apiPost({ action: 'deleteTestDataByDate', date });
+    // Use 3-minute timeout to handle large datasets
+    const res = await apiPost({ action: 'deleteTestDataByDate', date }, 180000);
     if (!res.ok) throw new Error(res.error || '刪除失敗');
 
     const removedCount = Number(res.data?.deleted_count);
-    if (Number.isFinite(removedCount)) {
-      deleteTestDataMessage.textContent = `刪除完成，共刪除 ${removedCount} 筆`;
-      return;
-    }
-    deleteTestDataMessage.textContent = '刪除完成';
+    deleteTestDataMessage.textContent = Number.isFinite(removedCount)
+      ? `刪除完成，共刪除 ${removedCount} 筆`
+      : '刪除完成';
+    // Reload date list to reflect the deletion
+    clearChecksDatesCache();
+    await loadChecksDates(true);
   } catch (err) {
     deleteTestDataMessage.textContent = `刪除失敗: ${safeText(err.message)}`;
   }
@@ -318,6 +395,7 @@ if (reportForm) reportForm.addEventListener('submit', handleSaveReport);
 if (reloadReportBtn) reloadReportBtn.addEventListener('click', loadReportConfig);
 if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendReportNow);
 if (deleteTestDataForm) deleteTestDataForm.addEventListener('submit', handleDeleteTestData);
+if (reloadDeleteDatesBtn) reloadDeleteDatesBtn.addEventListener('click', () => loadChecksDates(true));
 
 async function initFirstLoad() {
   setLoadingOverlay(true);
@@ -336,6 +414,8 @@ async function initFirstLoad() {
       window.setTimeout(() => setLoadingOverlay(false), 220);
     }
   }
+  // Load available dates for delete dropdown (fire-and-forget after overlay)
+  loadChecksDates(false);
 }
 
 initFirstLoad();
