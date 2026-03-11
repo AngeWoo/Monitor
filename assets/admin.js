@@ -1,4 +1,4 @@
-import { apiGet, apiPost, safeText, loadHostBadge } from './common.js?v=20260311-a004';
+import { apiGet, apiPost, safeText, loadHostBadge } from './common.js?v=20260311-a005';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
@@ -281,6 +281,7 @@ function applyReportConfig(cfg) {
   reportForm.elements.line_channel_access_token.value = safeText(cfg.line_channel_access_token || '');
   reportForm.elements.line_to.value = safeText(cfg.line_to || '');
   reportForm.elements.teams_webhook_url.value = safeText(cfg.teams_webhook_url || '');
+  reportForm.elements.monitor_label.value = safeText(cfg.monitor_label || '');
 }
 
 async function loadReportConfig(onProgress) {
@@ -327,6 +328,7 @@ async function handleSaveReport(e) {
 
   const payload = {
     action: 'updateReportConfig',
+    monitor_label: reportForm.elements.monitor_label.value.trim(),
     recipients: recipients,
     notify_mode: notifyMode,
     frequency: reportForm.elements.frequency.value,

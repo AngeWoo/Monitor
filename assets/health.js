@@ -1,4 +1,4 @@
-import { apiGet, apiPost, fmtDate, safeText, statusBadge, loadHostBadge } from './common.js?v=20260311-a004';
+import { apiGet, apiPost, fmtDate, safeText, statusBadge, loadHostBadge } from './common.js?v=20260311-a005';
 
 const summaryEl = document.getElementById('healthSummary');
 const staleBody = document.getElementById('staleBody');
