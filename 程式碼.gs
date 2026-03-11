@@ -6,9 +6,14 @@
  * - deleteTestDataByDate: 刪除 checks 中指定日期的所有資料（不看 is_test）
  * - Dashboard URL: 動態由前端帶入 dashboard_url 並儲存，寄信 footer 自動附上
  *********************************/
-const SHEET_SERVICES = "services";
-const SHEET_CHECKS = "checks";
+const SHEET_SERVICES   = "services";
+const SHEET_CHECKS     = "checks";
+const SHEET_PORT_SCANS = "port_scans";
 const API_KEY = "";
+
+const PORT_SCAN_HEADERS = [
+  "device_name", "host", "open_ports", "scanned_at", "open_count", "total_count"
+];
 
 const PROP_REPORT_CONFIG = "REPORT_CONFIG";
 const PROP_REPORT_LAST_SLOT = "REPORT_LAST_SLOT";
@@ -37,6 +42,10 @@ function initSheets() {
   let s2 = ss.getSheetByName(SHEET_CHECKS);
   if (!s2) s2 = ss.insertSheet(SHEET_CHECKS);
   ensureHeaders_(s2, CHECK_HEADERS);
+
+  let s3 = ss.getSheetByName(SHEET_PORT_SCANS);
+  if (!s3) s3 = ss.insertSheet(SHEET_PORT_SCANS);
+  ensureHeaders_(s3, PORT_SCAN_HEADERS);
 }
 
 function ensureHeaders_(sheet, requiredHeaders) {
@@ -75,6 +84,12 @@ function doGet(e) {
 
     let result;
     switch (action) {
+      case "dashboardInit":
+        result = dashboardInit_(toNum_(p.hours, 24));
+        break;
+      case "updatePortScan":
+        result = updatePortScan_(p);
+        break;
       case "listServices":
         result = listServices_();
         break;
@@ -213,6 +228,9 @@ function doPost(e) {
       case "metricsAll":
         result = metricsAll_(toNum_(body.hours, 24));
         break;
+      case "updatePortScan":
+        result = updatePortScan_(body);
+        break;
       default:
         result = { ok: false, error: "Unknown action" };
     }
@@ -304,6 +322,7 @@ function addService_(b) {
   };
 
   sh.appendRow(rowFromObj_(header, rowObj));
+  invalidateServicesCache_();
   return { ok: true, id: id };
 }
 
@@ -323,6 +342,7 @@ function updateService_(b) {
     if (b.interval_min !== undefined) sh.getRange(r + 1, idx.interval_min + 1).setValue(Math.max(1, toNum_(b.interval_min, 5)));
     if (b.enabled !== undefined) sh.getRange(r + 1, idx.enabled + 1).setValue(!!b.enabled);
     sh.getRange(r + 1, idx.updated_at + 1).setValue(new Date());
+    invalidateServicesCache_();
     return { ok: true };
   }
 
@@ -343,17 +363,120 @@ function hardDeleteService_(id) {
   for (var r = 1; r < values.length; r++) {
     if (String(values[r][idx.id]) !== String(id)) continue;
     sh.deleteRow(r + 1);
+    invalidateServicesCache_();
     return { ok: true };
   }
   return { ok: false, error: "Not found" };
 }
 
 function listServices_() {
-  const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
-  const values = sh.getDataRange().getValues();
-  if (values.length < 2) return { ok: true, data: [] };
-  const header = values[0];
-  return { ok: true, data: values.slice(1).map((r) => objFromRow_(header, r)) };
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get(CACHE_KEY_SERVICES);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (_) {}
+  }
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+  var values = sh.getDataRange().getValues();
+  var result = values.length < 2
+    ? { ok: true, data: [] }
+    : { ok: true, data: values.slice(1).map(function(r) { return objFromRow_(values[0], r); }) };
+  try { cache.put(CACHE_KEY_SERVICES, JSON.stringify(result), CACHE_TTL_SERVICES); } catch (_) {}
+  return result;
+}
+
+/**
+ * Combined init: returns services + metricsAll + checksDateRange in one call.
+ * Minimises JSONP round trips and benefits from all server-side caches.
+ */
+/**
+ * Called by the Node.js port-scanner after each scan.
+ * Upserts one row per device_name in the port_scans sheet.
+ */
+function updatePortScan_(payload) {
+  var deviceName = String(payload.device_name || '').trim();
+  if (!deviceName) return { ok: false, error: 'Missing device_name' };
+
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SHEET_PORT_SCANS);
+  if (!sh) { sh = ss.insertSheet(SHEET_PORT_SCANS); ensureHeaders_(sh, PORT_SCAN_HEADERS); }
+
+  var openPorts  = String(payload.open_ports  || '').trim();
+  var scannedAt  = String(payload.scanned_at  || new Date().toISOString()).trim();
+  var openCount  = Number(payload.open_count  || 0);
+  var totalCount = Number(payload.total_count || 0);
+  var host       = String(payload.host        || '').trim();
+
+  var lastRow = sh.getLastRow();
+  if (lastRow >= 2) {
+    var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    var idx    = indexMap_(header);
+    var col    = sh.getLastColumn();
+    var data   = sh.getRange(2, 1, lastRow - 1, col).getValues();
+    for (var r = 0; r < data.length; r++) {
+      if (String(data[r][idx.device_name] || '').trim() === deviceName) {
+        var rowNum = r + 2; // 1-based, +1 for header
+        sh.getRange(rowNum, idx.host       + 1).setValue(host);
+        sh.getRange(rowNum, idx.open_ports + 1).setValue(openPorts);
+        sh.getRange(rowNum, idx.scanned_at + 1).setValue(scannedAt);
+        sh.getRange(rowNum, idx.open_count + 1).setValue(openCount);
+        sh.getRange(rowNum, idx.total_count+ 1).setValue(totalCount);
+        return { ok: true, updated: true };
+      }
+    }
+  }
+
+  // No existing row — append
+  var header2 = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  sh.appendRow(rowFromObj_(header2, {
+    device_name: deviceName, host: host,
+    open_ports:  openPorts,  scanned_at: scannedAt,
+    open_count:  openCount,  total_count: totalCount
+  }));
+  return { ok: true, created: true };
+}
+
+/**
+ * Reads port_scans sheet and returns a map:
+ *   { deviceName: { host, open_ports: [80,443,...], scanned_at, open_count, total_count } }
+ */
+function readPortScansMap_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_PORT_SCANS);
+  if (!sh || sh.getLastRow() < 2) return {};
+  var values = sh.getDataRange().getValues();
+  var idx = indexMap_(values[0]);
+  var map = {};
+  for (var r = 1; r < values.length; r++) {
+    var row  = values[r];
+    var name = String(row[idx.device_name] || '').trim();
+    if (!name) continue;
+    var portsStr = String(row[idx.open_ports] || '').trim();
+    var ports = portsStr
+      ? portsStr.split(',').map(function(p) { return Number(p.trim()); }).filter(function(n) { return n > 0; })
+      : [];
+    map[name] = {
+      host:        String(row[idx.host]        || ''),
+      open_ports:  ports,
+      scanned_at:  row[idx.scanned_at]         || null,
+      open_count:  Number(row[idx.open_count]  || 0),
+      total_count: Number(row[idx.total_count] || 0)
+    };
+  }
+  return map;
+}
+
+function dashboardInit_(hours) {
+  var hoursNum = toNum_(hours, 24);
+  var svcResult     = listServices_();
+  var metricsResult = metricsAll_(hoursNum);
+  var dateResult    = getChecksDateRange_();
+  return {
+    ok: true,
+    data: {
+      services:       svcResult.data     || [],
+      metricsAll:     metricsResult.data || {},
+      checksDateRange: dateResult.data   || {}
+    }
+  };
 }
 
 function getMetrics_(serviceId, hours) {
@@ -381,27 +504,54 @@ function getMetrics_(serviceId, hours) {
 }
 
 function metricsAll_(hours) {
+  var hoursNum = Math.max(1, toNum_(hours, 24));
+  var cacheKey = CACHE_KEY_METRICS_PFX + hoursNum;
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get(cacheKey);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (_) {}
+  }
+
   var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_CHECKS);
-  var values = sh.getDataRange().getValues();
-  if (values.length < 2) return { ok: true, data: {} };
-  var idx = indexMap_(values[0]);
-  var since = Date.now() - Math.max(1, toNum_(hours, 24)) * 3600 * 1000;
-  var grouped = {};
-  for (var r = 1; r < values.length; r++) {
-    var row = values[r];
-    var ts = new Date(row[idx.timestamp]).getTime();
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return { ok: true, data: {} };
+  var lastCol = sh.getLastColumn();
+
+  // Tail-read optimisation: only fetch recent rows instead of entire sheet.
+  // Assumes at most 30 services each checking once per minute (×1.1 buffer).
+  var estimatedRows = Math.max(5000, Math.ceil(hoursNum * 60 * 30 * 1.1));
+  var startRow = Math.max(2, lastRow - estimatedRows + 1);
+  var numRows  = lastRow - startRow + 1;
+
+  var header    = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var idx       = indexMap_(header);
+  var since     = Date.now() - hoursNum * 3600 * 1000;
+  var grouped   = {};
+
+  var dataValues = sh.getRange(startRow, 1, numRows, lastCol).getValues();
+  for (var r = 0; r < dataValues.length; r++) {
+    var row = dataValues[r];
+    var ts  = new Date(row[idx.timestamp]).getTime();
     if (ts < since) continue;
     var sid = String(row[idx.service_id]);
     if (!grouped[sid]) grouped[sid] = [];
     grouped[sid].push({
-      timestamp: row[idx.timestamp],
-      status: row[idx.status],
-      http_code: row[idx.http_code],
+      timestamp:  row[idx.timestamp],
+      status:     row[idx.status],
+      http_code:  row[idx.http_code],
       latency_ms: row[idx.latency_ms],
-      error: row[idx.error]
+      error:      row[idx.error]
     });
   }
-  return { ok: true, data: grouped };
+
+  var result = { ok: true, data: grouped };
+  // Only store in CacheService when payload fits within the 100 KB limit
+  try {
+    var json = JSON.stringify(result);
+    if (json.length < 90000) cache.put(cacheKey, json, CACHE_TTL_METRICS);
+  } catch (_) {}
+
+  return result;
 }
 
 function appendCheckLog_(serviceId, result) {
@@ -505,12 +655,27 @@ function deleteTestDataByDate_(payload) {
   };
 }
 
-/*************** Checks Date Helpers ***************/
-var CACHE_KEY_DATES = 'checks_dates_v1';
-var CACHE_TTL_DATES = 300; // 5 minutes
+/*************** Cache Keys & TTLs ***************/
+var CACHE_KEY_SERVICES    = 'list_services_v1';
+var CACHE_TTL_SERVICES    = 35;   // 35 seconds
+var CACHE_KEY_METRICS_PFX = 'metrics_all_v1_';
+var CACHE_TTL_METRICS     = 60;   // 60 seconds (only stored when JSON < 90 KB)
+var CACHE_KEY_DATES       = 'checks_dates_v1';
+var CACHE_TTL_DATES       = 300;  // 5 minutes
 
 function invalidateChecksDateCache_() {
   try { CacheService.getScriptCache().remove(CACHE_KEY_DATES); } catch (_) {}
+}
+
+function invalidateServicesCache_() {
+  try { CacheService.getScriptCache().remove(CACHE_KEY_SERVICES); } catch (_) {}
+}
+
+function invalidateMetricsAllCache_() {
+  try {
+    var cache = CacheService.getScriptCache();
+    [6, 24, 72].forEach(function(h) { cache.remove(CACHE_KEY_METRICS_PFX + h); });
+  } catch (_) {}
 }
 
 function getChecksDatesFromSheet_() {
@@ -598,8 +763,24 @@ function defaultReportConfig_() {
     notify_mode: "mail",
     line_channel_access_token: "",
     line_to: "",
-    teams_webhook_url: ""
+    teams_webhook_url: "",
+    monitor_label: ""
   };
+}
+
+/**
+ * Returns the display label for this monitoring instance.
+ * Uses monitor_label from config if set; otherwise extracts host from dashboard URL.
+ */
+function getMonitorLabel_(cfg) {
+  var label = String((cfg && cfg.monitor_label) || '').trim();
+  if (label) return label;
+  var url = getDashboardUrl_();
+  if (url) {
+    var m = url.match(/^https?:\/\/([^\/]+)/);
+    if (m && m[1]) return m[1];
+  }
+  return 'Service Monitor';
 }
 
 function getReportConfig_() {
@@ -625,6 +806,7 @@ function normalizeReportConfig_(cfg) {
   out.line_channel_access_token = String(out.line_channel_access_token || "").trim();
   out.line_to = normalizeLineToConfig_(out.line_to);
   out.teams_webhook_url = String(out.teams_webhook_url || "").trim();
+  out.monitor_label = String(out.monitor_label || "").trim();
   return out;
 }
 
@@ -638,7 +820,8 @@ function updateReportConfig_(payload) {
     notify_mode: payload.notify_mode,
     line_channel_access_token: payload.line_channel_access_token,
     line_to: payload.line_to,
-    teams_webhook_url: payload.teams_webhook_url
+    teams_webhook_url: payload.teams_webhook_url,
+    monitor_label: payload.monitor_label
   });
 
   const needsMail = cfg.notify_mode !== "line_only";
@@ -706,6 +889,37 @@ function parseRecipients_(raw) {
   return String(raw || "").split(/[;,]/).map((s) => s.trim()).filter((s) => s);
 }
 
+/**
+ * Fetches port scan results from the local port-scanner via nginx reverse proxy.
+ * Returns an object keyed by device name → array of open port numbers.
+ * Returns {} on any error so callers can treat it as "no data".
+ */
+function fetchPortDevicesMap_() {
+  var dashUrl = getDashboardUrl_();
+  if (!dashUrl) return {};
+  try {
+    var m = dashUrl.match(/^(https?:\/\/[^\/]+)/);
+    if (!m) return {};
+    var apiUrl = m[1] + '/port-api/devices';
+    var resp = UrlFetchApp.fetch(apiUrl, { muteHttpExceptions: true, followRedirects: true });
+    if (resp.getResponseCode() !== 200) return {};
+    var json = JSON.parse(resp.getContentText());
+    if (!json.ok || !Array.isArray(json.data)) return {};
+    var portMap = {};
+    json.data.forEach(function(d) {
+      if (!d.last_scan || !Array.isArray(d.last_scan.ports)) return;
+      var open = d.last_scan.ports
+        .filter(function(p) { return p.status === 'open'; })
+        .map(function(p) { return p.port; })
+        .sort(function(a, b) { return a - b; });
+      if (open.length) portMap[String(d.name)] = open;
+    });
+    return portMap;
+  } catch (_) {
+    return {};
+  }
+}
+
 function sendStatusReport_(cfg, forceSend, now) {
   const sendMail = cfg.notify_mode !== "line_only";
   const recipients = parseRecipients_(cfg.recipients);
@@ -722,7 +936,9 @@ function sendStatusReport_(cfg, forceSend, now) {
   const tz = Session.getScriptTimeZone();
   const at = Utilities.formatDate(now, tz, "yyyy-MM-dd HH:mm:ss");
   const statusLabel = issues.length > 0 ? "ALERT" : "OK";
-  const subject = `[Service Monitor][${statusLabel}] ${at}`;
+  const monitorLabel = getMonitorLabel_(cfg);
+  const subject = `[Service Monitor][${statusLabel}][${monitorLabel}] ${at}`;
+  const portMap = readPortScansMap_(); // { serviceName: { open_ports:[80,443], scanned_at, ... } }
   const latencyValues = services
     .map((s) => Number(s.last_latency_ms))
     .filter((v) => Number.isFinite(v) && v >= 0);
@@ -740,6 +956,11 @@ function sendStatusReport_(cfg, forceSend, now) {
   const allRowsHtml = services.length
     ? services.map((s) => {
         const isIssue = String(s.last_status || "").toUpperCase() !== "UP";
+        const portData  = portMap[String(s.name)];
+        const openPorts = portData ? portData.open_ports : null;
+        const portsCell = openPorts && openPorts.length
+          ? `<span style="color:#0e7a6a;font-weight:600;">${openPorts.join(", ")}</span>`
+          : `<span style="color:#aaa;">—</span>`;
         return `<tr>
           <td>${escapeHtml_(s.name)}</td>
           <td>${escapeHtml_(s.url)}</td>
@@ -747,10 +968,11 @@ function sendStatusReport_(cfg, forceSend, now) {
           <td>${escapeHtml_(String(s.last_http_code || "-"))}</td>
           <td>${escapeHtml_(String(s.last_latency_ms || "-"))}</td>
           <td>${escapeHtml_(String(s.last_check_at || "-"))}</td>
+          <td>${portsCell}</td>
           <td>${isIssue ? "YES" : "NO"}</td>
         </tr>`;
       }).join("")
-    : `<tr><td colspan="7">目前沒有啟用服務</td></tr>`;
+    : `<tr><td colspan="8">目前沒有啟用服務</td></tr>`;
 
   const dashboardUrl = getDashboardUrl_();
   const dashboardHtml = dashboardUrl
@@ -772,14 +994,26 @@ function sendStatusReport_(cfg, forceSend, now) {
        <li>最大延遲：${maxLatency !== null ? maxLatency + " ms" : "N/A"}</li>
      </ul>`;
 
+  const issueUrlsHtml = issues.length
+    ? `<hr><h3>⚠️ 異常偵測主機網址</h3><ul style="margin:4px 0;padding-left:20px;">` +
+      issues.map((s) =>
+        `<li><strong>${escapeHtml_(s.name)}</strong>：` +
+        `<a href="${escapeHtml_(s.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml_(s.url)}</a></li>`
+      ).join("") +
+      `</ul>`
+    : "";
+
   const htmlBody =
     `<h2>Service Monitor 狀態報告</h2>
+     <p style="color:#555;font-size:0.9em;border-bottom:1px solid #e0e0e0;padding-bottom:8px;margin-bottom:12px;">
+       監控站：<strong>${escapeHtml_(monitorLabel)}</strong>
+     </p>
      <p>時間：${escapeHtml_(at)}</p>
      <p>啟用服務：${services.length}，正常：${upCount}，異常：${issues.length}</p>
      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
-       <thead><tr><th>服務</th><th>URL</th><th>狀態</th><th>HTTP</th><th>延遲(ms)</th><th>最後檢查</th><th>是否異常</th></tr></thead>
+       <thead><tr><th>服務</th><th>URL</th><th>狀態</th><th>HTTP</th><th>延遲(ms)</th><th>最後檢查</th><th>開放 Ports</th><th>是否異常</th></tr></thead>
        <tbody>${allRowsHtml}</tbody>
-     </table>${statsHtml}${dashboardHtml}${dashboardBackLinkHtml}`;
+     </table>${statsHtml}${issueUrlsHtml}${dashboardHtml}${dashboardBackLinkHtml}`;
 
   const plainLines = services.map((s) => {
     const st = String(s.last_status || "UNKNOWN");
@@ -787,11 +1021,15 @@ function sendStatusReport_(cfg, forceSend, now) {
     const latency = String(s.last_latency_ms || "-");
     const t = String(s.last_check_at || "-");
     const isIssue = st.toUpperCase() !== "UP" ? "YES" : "NO";
-    return `- ${s.name} | ${st} | HTTP ${code} | ${latency} ms | ${t} | ISSUE:${isIssue}`;
+    const portData  = portMap[String(s.name)];
+    const openPorts = portData ? portData.open_ports : null;
+    const portStr   = openPorts && openPorts.length ? openPorts.join(", ") : "—";
+    return `- ${s.name} | ${st} | HTTP ${code} | ${latency} ms | Ports:${portStr} | ${t} | ISSUE:${isIssue}`;
   });
 
   let plain =
     `Service Monitor 狀態報告\n` +
+    `監控站: ${monitorLabel}\n` +
     `時間: ${at}\n` +
     `啟用服務: ${services.length}, 正常: ${upCount}, 異常: ${issues.length}\n\n` +
     `所有服務列表:\n` +
@@ -808,6 +1046,13 @@ function sendStatusReport_(cfg, forceSend, now) {
   if (dashboardUrl) {
     plain += `\n\n點一下回到 Dashboard:`;
     plain += `\n${dashboardUrl}`;
+  }
+
+  if (issues.length) {
+    plain += `\n\n=== 異常偵測主機網址 ===`;
+    issues.forEach((s) => {
+      plain += `\n- ${s.name}: ${s.url}`;
+    });
   }
 
   const channels = [];
@@ -827,12 +1072,12 @@ function sendStatusReport_(cfg, forceSend, now) {
 
   if (shouldDispatchExtraChannels && shouldSendLine) {
     channels.push(callNotifierSafe_("line", function () {
-      return sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl);
+      return sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl, monitorLabel, portMap);
     }));
   }
   if (shouldDispatchExtraChannels && shouldSendTeams) {
     channels.push(callNotifierSafe_("teams", function () {
-      return sendTeamsAlert_(cfg, subject, at, services, issues, dashboardUrl);
+      return sendTeamsAlert_(cfg, subject, at, services, issues, dashboardUrl, monitorLabel, portMap);
     }));
   }
 
@@ -861,9 +1106,11 @@ function callNotifierSafe_(channel, fn) {
   }
 }
 
-function buildAlertText_(subject, at, services, issues, dashboardUrl) {
+function buildAlertText_(subject, at, services, issues, dashboardUrl, monitorLabel, portMap) {
+  var pm = portMap || {};
   const lines = [
     subject,
+    `監控站: ${monitorLabel || 'Service Monitor'}`,
     `時間: ${at}`,
     `啟用服務: ${services.length}`,
     `異常數: ${issues.length}`
@@ -871,7 +1118,11 @@ function buildAlertText_(subject, at, services, issues, dashboardUrl) {
   if (issues.length) {
     lines.push("異常服務:");
     issues.slice(0, 10).forEach((s) => {
-      lines.push(`- ${s.name || s.url || "(未命名)"} | ${String(s.last_status || "UNKNOWN")} | HTTP ${String(s.last_http_code || "-")}`);
+      const portData  = pm[String(s.name || "")];
+      const openPorts = portData ? portData.open_ports : null;
+      const portStr   = openPorts && openPorts.length ? openPorts.join(", ") : "—";
+      lines.push(`- ${s.name || "(未命名)"} | ${String(s.last_status || "UNKNOWN")} | HTTP ${String(s.last_http_code || "-")} | Ports: ${portStr}`);
+      if (s.url) lines.push(`  ${s.url}`);
     });
     if (issues.length > 10) {
       lines.push(`...其餘 ${issues.length - 10} 筆請看 Dashboard`);
@@ -883,6 +1134,13 @@ function buildAlertText_(subject, at, services, issues, dashboardUrl) {
     lines.push("");
     lines.push("點一下回到 Dashboard:");
     lines.push(dashboardUrl);
+  }
+  if (issues.length) {
+    lines.push("");
+    lines.push("偵測主機網址:");
+    issues.slice(0, 10).forEach((s) => {
+      lines.push(`- ${s.name || "(未命名)"}: ${s.url || "(無網址)"}`);
+    });
   }
   return lines.join("\n");
 }
@@ -910,7 +1168,7 @@ function resolveLineNotifyTargets_(cfg, options) {
   return dedupeLineTargets_(recordedUsers.concat(configuredTargets));
 }
 
-function sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl) {
+function sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl, monitorLabel, portMap) {
   if (!cfg.line_channel_access_token) {
     return { channel: "line", sent: false, skipped: "LINE token 未設定" };
   }
@@ -920,7 +1178,7 @@ function sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl) {
     return { channel: "line", sent: false, skipped: "尚無可通知的 LINE User（請先讓使用者對 Bot 發訊息）" };
   }
 
-  const text = truncateText_(buildAlertText_(subject, at, services, issues, dashboardUrl), 4800);
+  const text = truncateText_(buildAlertText_(subject, at, services, issues, dashboardUrl, monitorLabel, portMap), 4800);
   const results = targets.map(function (target) {
     return sendLinePushSingle_(cfg.line_channel_access_token, target, text);
   });
@@ -953,12 +1211,12 @@ function sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl) {
   };
 }
 
-function sendTeamsAlert_(cfg, subject, at, services, issues, dashboardUrl) {
+function sendTeamsAlert_(cfg, subject, at, services, issues, dashboardUrl, monitorLabel, portMap) {
   if (!cfg.teams_webhook_url) {
     return { channel: "teams", sent: false, skipped: "Teams webhook 未設定" };
   }
 
-  const text = buildAlertText_(subject, at, services, issues, dashboardUrl);
+  const text = buildAlertText_(subject, at, services, issues, dashboardUrl, monitorLabel, portMap);
   const payload = {
     title: subject,
     text: text
