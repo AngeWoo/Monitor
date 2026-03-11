@@ -397,6 +397,42 @@ a {
   background: #dfe4ea;
 }
 
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.status-dot {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot-up {
+  background: var(--up);
+  box-shadow: 0 0 4px var(--up);
+}
+
+.dot-down {
+  background: var(--down);
+  box-shadow: 0 0 4px var(--down);
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+
+.dot-unknown {
+  background: #adb5bd;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .btn,
 .select,
 input {
@@ -859,6 +895,7 @@ label {
 
   /* inputs and links fill remaining space in flex td */
   table tbody td > input:not([type="checkbox"]),
+  table tbody td > .name-cell input:not([type="checkbox"]),
   table tbody td > .url-ellipsis {
     flex: 1;
     min-width: 0;

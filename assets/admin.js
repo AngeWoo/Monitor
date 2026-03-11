@@ -122,11 +122,17 @@ async function runTransientLoading(label, task) {
   }
 }
 
+function statusDot(status) {
+  if (status === 'UP') return '<span class="status-dot dot-up" title="UP"></span>';
+  if (status === 'DOWN') return '<span class="status-dot dot-down" title="DOWN"></span>';
+  return '<span class="status-dot dot-unknown" title="UNKNOWN"></span>';
+}
+
 function rowTemplate(s) {
   const enabled = String(s.enabled).toUpperCase() === 'TRUE';
   return `
     <tr>
-      <td data-label="名稱"><input data-field="name" data-id="${safeText(s.id)}" value="${safeText(s.name)}" /></td>
+      <td data-label="名稱"><span class="name-cell">${statusDot(s.last_status)}<input data-field="name" data-id="${safeText(s.id)}" value="${safeText(s.name)}" /></span></td>
       <td data-label="URL"><input data-field="url" data-id="${safeText(s.id)}" value="${safeText(s.url)}" /></td>
       <td data-label="頻率"><input data-field="interval_min" data-id="${safeText(s.id)}" type="number" min="1" max="1440" value="${safeText(s.interval_min || 5)}" /></td>
       <td data-label="啟用"><input data-field="enabled" data-id="${safeText(s.id)}" type="checkbox" ${enabled ? 'checked' : ''} /></td>
