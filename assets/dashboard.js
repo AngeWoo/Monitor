@@ -1,4 +1,4 @@
-import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge } from './common.js?v=20260227-fab1';
+import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge, loadHostBadge } from './common.js?v=20260311-a004';
 
 const summaryEl = document.getElementById('summary');
 const tbody = document.getElementById('servicesBody');
@@ -919,6 +919,7 @@ function bindEvents() {
     await loadServices();
     markRefreshDone();
     resetAutoRefreshClock();
+    loadHostBadge();
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="8">讀取失敗: ${safeText(err.message)}</td></tr>`;
     if (minuteHistoryBody) {

@@ -1,4 +1,4 @@
-import { apiGet, apiPost, fmtDate, safeText, statusBadge } from './common.js?v=20260227-fab1';
+import { apiGet, apiPost, fmtDate, safeText, statusBadge, loadHostBadge } from './common.js?v=20260311-a004';
 
 const summaryEl = document.getElementById('healthSummary');
 const staleBody = document.getElementById('staleBody');
@@ -235,6 +235,7 @@ async function initFirstLoad() {
   try {
     await loadHealth((p) => setLoadingProgress(p, '讀取健康資料...'));
     setLoadingProgress(100, '載入完成');
+    loadHostBadge();
   } finally {
     if (firstLoadPending) {
       firstLoadPending = false;

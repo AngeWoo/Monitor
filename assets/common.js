@@ -125,6 +125,15 @@ export function statusBadge(status) {
   return '<span class="badge unknown">UNKNOWN</span>';
 }
 
+// ---- Host Badge ----
+export function loadHostBadge() {
+  const badge = document.getElementById('hostBadge');
+  if (!badge) return;
+  const h = window.location.hostname;
+  const port = window.location.port;
+  badge.textContent = `🖥 ${h}${port ? ':' + port : ''}`;
+}
+
 // ---- Scroll FAB (floating scroll-to-top / scroll-to-bottom buttons) ----
 function createScrollFab() {
   const wrap = document.createElement('div');

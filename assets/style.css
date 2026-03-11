@@ -397,6 +397,19 @@ a {
   background: #dfe4ea;
 }
 
+.host-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted, #8892a4);
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 20px;
+  padding: 1px 8px;
+  vertical-align: middle;
+  letter-spacing: 0.2px;
+}
+
 .name-cell {
   display: flex;
   align-items: center;

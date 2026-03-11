@@ -1,4 +1,4 @@
-import { apiGet, apiPost, safeText } from './common.js?v=20260227-fab1';
+import { apiGet, apiPost, safeText, loadHostBadge } from './common.js?v=20260311-a004';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
@@ -442,6 +442,7 @@ if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendRepor
 if (deleteTestDataForm) deleteTestDataForm.addEventListener('submit', handleDeleteTestData);
 if (reloadDeleteDatesBtn) reloadDeleteDatesBtn.addEventListener('click', () => loadChecksDates(true));
 
+
 async function initFirstLoad() {
   setLoadingOverlay(true);
   setLoadingProgress(8, '讀取服務清單...');
@@ -461,6 +462,7 @@ async function initFirstLoad() {
   }
   // Load available dates for delete dropdown (fire-and-forget after overlay)
   loadChecksDates(false);
+  loadHostBadge();
 }
 
 initFirstLoad();
