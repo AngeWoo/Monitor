@@ -95,6 +95,9 @@ $loopTimer.Interval = $loopIntervalSec * 1000
 $pollTimer = New-Object System.Windows.Forms.Timer
 $pollTimer.Interval = 500
 
+$signalTimer = New-Object System.Windows.Forms.Timer
+$signalTimer.Interval = 5000
+
 $script:isLoopEnabled = $false
 $script:isProbeRunning = $false
 $script:lastStatusText = "Status: idle"
@@ -103,6 +106,7 @@ $script:stdoutPath = ""
 $script:stderrPath = ""
 $script:stdoutOffset = 0
 $script:stderrOffset = 0
+$script:lastHandledSignalAt = ""
 
 function Append-Log {
   param([string]$Text)
@@ -154,6 +158,21 @@ function Update-ProbePresence {
   }
 }
 
+function Get-ProbeRunSignal {
+  if (-not $apiBase) { return $null }
+  try {
+    $uriBuilder = [System.UriBuilder]::new($apiBase)
+    $query = "action=getProbeRunSignal&probe_id=$([System.Uri]::EscapeDataString($probeId))"
+    $uriBuilder.Query = $query
+    $response = Invoke-RestMethod -Uri $uriBuilder.Uri.AbsoluteUri -Method Get
+    if ($response -and $response.ok -and $response.data) {
+      return $response.data
+    }
+  } catch {
+  }
+  return $null
+}
+
 function Cleanup-TempFiles {
   foreach ($path in @($script:stdoutPath, $script:stderrPath)) {
     if ($path -and (Test-Path $path)) {
@@ -177,7 +196,7 @@ function Read-NewLogChunk {
   }
 
   try {
-    $text = Get-Content -Path $Path -Raw -ErrorAction Stop
+    $text = Get-Content -Path $Path -Raw -Encoding UTF8 -ErrorAction Stop
   } catch {
     return @{ Offset = $Offset; Text = "" }
   }
@@ -257,6 +276,11 @@ function Finish-ProbeProcess {
 }
 
 function Start-ProbeProcess {
+  param(
+    [string]$ForceServiceId = "",
+    [string]$TriggerLabel = ""
+  )
+
   if ($script:isProbeRunning) {
     Append-Log "Probe run already in progress."
     return
@@ -270,6 +294,9 @@ function Start-ProbeProcess {
   $argumentList = @("--run-once", "--no-result-window")
   if (Test-Path $cfgPath) {
     $argumentList += @("--config", $cfgPath)
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ForceServiceId)) {
+    $argumentList += @("--service-id", $ForceServiceId)
   }
 
   try {
@@ -285,7 +312,8 @@ function Start-ProbeProcess {
 
   $script:isProbeRunning = $true
   $script:lastStatusText = if ($script:isLoopEnabled) { "Status: running (loop enabled)" } else { "Status: running" }
-  Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] Probe started")
+  $runLabel = if ([string]::IsNullOrWhiteSpace($TriggerLabel)) { "Probe started" } else { $TriggerLabel }
+  Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] " + $runLabel)
   Update-Status
 
   if (-not $pollTimer.Enabled) {
@@ -310,6 +338,21 @@ $pollTimer.Add_Tick({
   Finish-ProbeProcess
 })
 
+$signalTimer.Add_Tick({
+  if ($script:isProbeRunning) { return }
+  $signal = Get-ProbeRunSignal
+  if (-not $signal) { return }
+
+  $requestedAt = [string]$signal.requested_at
+  if ([string]::IsNullOrWhiteSpace($requestedAt)) { return }
+  if ($requestedAt -eq $script:lastHandledSignalAt) { return }
+
+  $script:lastHandledSignalAt = $requestedAt
+  $serviceName = [string]$signal.service_name
+  if ([string]::IsNullOrWhiteSpace($serviceName)) { $serviceName = "all services" }
+  Start-ProbeProcess -ForceServiceId ([string]$signal.service_id) -TriggerLabel ("Remote refresh requested: " + $serviceName)
+})
+
 $loopTimer.Add_Tick({
   if (-not $script:isLoopEnabled) { return }
   if ($script:isProbeRunning) { return }
@@ -327,6 +370,9 @@ $btnStart.Add_Click({
   Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] Loop mode started")
   Update-Status
   $loopTimer.Start()
+  if (-not $signalTimer.Enabled) {
+    $signalTimer.Start()
+  }
   if (-not $script:isProbeRunning) {
     Start-ProbeProcess
   }
@@ -338,6 +384,7 @@ $btnStop.Add_Click({
   if ($script:isLoopEnabled) {
     $script:isLoopEnabled = $false
     $loopTimer.Stop()
+    $signalTimer.Stop()
     Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] Loop mode stopped")
   }
 
@@ -363,6 +410,7 @@ $btnStop.Add_Click({
 
 $btnClose.Add_Click({
   $loopTimer.Stop()
+  $signalTimer.Stop()
   $script:isLoopEnabled = $false
 
   if ($script:isProbeRunning -and $script:probeProcess) {
@@ -381,6 +429,7 @@ $btnClose.Add_Click({
 $form.Add_FormClosing({
   try {
     $loopTimer.Stop()
+    $signalTimer.Stop()
     $script:isLoopEnabled = $false
     if ($script:isProbeRunning -and $script:probeProcess) {
       Stop-Process -Id $script:probeProcess.Id -Force -ErrorAction SilentlyContinue
@@ -395,6 +444,11 @@ $form.Add_Shown({
   Append-Log "Control window ready."
   Append-Log "Use Run Once for a single check, or Start Loop for repeated runs."
   Append-Log "Loop interval: $loopIntervalSec sec"
+  Append-Log "Remote refresh signal poll: 5 sec"
+  if (-not $signalTimer.Enabled) {
+    $signalTimer.Start()
+  }
+  Update-ProbePresence -RunStatus "IDLE" -Summary "Probe window ready"
   Update-Status
 })
 
