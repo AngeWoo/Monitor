@@ -10,10 +10,25 @@ const loadingLabel = document.getElementById('loadingLabel');
 const loadingPercent = document.getElementById('loadingPercent');
 const loadingBarInner = document.getElementById('loadingBarInner');
 
+const notifyLogBody = document.getElementById('notifyLogBody');
+const notifyLogMessage = document.getElementById('notifyLogMessage');
+const notifyLogPageInfo = document.getElementById('notifyLogPageInfo');
+const notifyLogPrevBtn = document.getElementById('notifyLogPrevBtn');
+const notifyLogNextBtn = document.getElementById('notifyLogNextBtn');
+const notifyLogRefreshBtn = document.getElementById('notifyLogRefreshBtn');
+const notifyLogTabButtons = Array.from(document.querySelectorAll('[data-log-channel]'));
+
+const CLICK_LOADING_MIN_MS = 380;
+const NOTIFY_LOG_PAGE_SIZE = 30;
+
 let isLoading = false;
 let timer = null;
 let firstLoadPending = true;
-const CLICK_LOADING_MIN_MS = 380;
+
+let notifyLogChannel = 'mail';
+let notifyLogPage = 1;
+let notifyLogTotalPages = 0;
+let notifyLogTotalRows = 0;
 
 function setLoadingOverlay(show) {
   if (!loadingOverlay) return;
@@ -41,19 +56,23 @@ async function runTransientLoading(label, task) {
   }
 }
 
-function toDate(v) {
-  if (!v) return null;
-  const d = new Date(v);
+function toDate(value) {
+  if (!value) return null;
+  const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function toNum(v, defVal = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : defVal;
+function toNum(value, defaultValue = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : defaultValue;
 }
 
-function isEnabled(v) {
-  return String(v).toUpperCase() === 'TRUE' || v === true;
+function isEnabled(value) {
+  return String(value).toUpperCase() === 'TRUE' || value === true;
+}
+
+function isTrue(value) {
+  return value === true || String(value).toUpperCase() === 'TRUE';
 }
 
 function analyzeService(service, nowMs) {
@@ -65,11 +84,11 @@ function analyzeService(service, nowMs) {
   const nextCheck = toDate(service.next_check_at);
 
   if (!isEnabled(service.enabled)) {
-    return { stale: false, reason: '停用', lastCheck, nextCheck, intervalMin };
+    return { stale: false, reason: '停用中', lastCheck, nextCheck, intervalMin };
   }
 
   if (!lastCheck) {
-    return { stale: true, reason: '尚無檢查記錄', lastCheck, nextCheck, intervalMin };
+    return { stale: true, reason: '尚未執行過健康檢查', lastCheck, nextCheck, intervalMin };
   }
 
   const overdueByLast = nowMs - lastCheck.getTime() - intervalMs - graceMs;
@@ -99,47 +118,159 @@ function renderSummary(stats) {
       : '<span class="badge down">疑似停擺</span>';
 
   summaryEl.innerHTML = [
-    { label: 'API 可用性', value: stats.apiOk ? '正常' : '異常' },
-    { label: 'API 回應時間', value: `${stats.apiLatencyMs} ms` },
+    { label: 'API 狀態', value: stats.apiOk ? '正常' : '異常' },
+    { label: 'API 延遲', value: `${stats.apiLatencyMs} ms` },
     { label: '啟用服務數', value: stats.enabledCount },
-    { label: '可疑服務數', value: stats.staleCount },
-    { label: '最近檢查時間', value: stats.lastCheckAt ? fmtDate(stats.lastCheckAt) : '-' },
-    { label: '排程判定', value: schedulerBadge }
-  ].map(item => {
+    { label: '逾時服務數', value: stats.staleCount },
+    { label: '最後檢查時間', value: stats.lastCheckAt ? fmtDate(stats.lastCheckAt) : '-' },
+    { label: '排程狀態', value: schedulerBadge }
+  ].map((item) => {
     const valueHtml = String(item.value).includes('<span')
       ? `<div class="metric-value">${item.value}</div>`
       : `<strong>${item.value}</strong>`;
     return `
-    <article class="metric">
-      <p>${item.label}</p>
-      ${valueHtml}
-    </article>
-  `;
+      <article class="metric">
+        <p>${item.label}</p>
+        ${valueHtml}
+      </article>
+    `;
   }).join('');
 }
 
 function renderStaleRows(rows) {
   if (!rows.length) {
-    staleBody.innerHTML = '<tr><td colspan="6">目前沒有可疑服務</td></tr>';
+    staleBody.innerHTML = '<tr><td colspan="6">目前沒有逾時服務</td></tr>';
     return;
   }
 
   staleBody.innerHTML = rows.map(({ service, check }) => `
     <tr>
-      <td data-label="服務">${safeText(service.name)}</td>
-      <td data-label="頻率">${check.intervalMin}</td>
+      <td data-label="服務名稱">${safeText(service.name)}</td>
+      <td data-label="檢查間隔">${check.intervalMin}</td>
       <td data-label="最後檢查">${check.lastCheck ? fmtDate(check.lastCheck) : '-'}</td>
-      <td data-label="下次檢查">${check.nextCheck ? fmtDate(check.nextCheck) : '-'}</td>
+      <td data-label="下次預定">${check.nextCheck ? fmtDate(check.nextCheck) : '-'}</td>
       <td data-label="狀態">${statusBadge(service.last_status)}</td>
-      <td data-label="判定">${safeText(check.reason)}</td>
+      <td data-label="原因">${safeText(check.reason)}</td>
     </tr>
   `).join('');
+}
+
+function notificationStatusBadge(item) {
+  if (isTrue(item.sent) && isTrue(item.partial)) return '<span class="badge unknown">部分成功</span>';
+  if (isTrue(item.sent)) return '<span class="badge up">已送出</span>';
+  if (item.skipped) return '<span class="badge unknown">已略過</span>';
+  return '<span class="badge down">失敗</span>';
+}
+
+function triggerLabel(trigger) {
+  return String(trigger || '').toLowerCase() === 'manual' ? '手動' : '排程';
+}
+
+function formatIssueService(item) {
+  const issueCount = toNum(item.issue_count, 0);
+  const serviceCount = toNum(item.service_count, 0);
+  return `${issueCount} / ${serviceCount}`;
+}
+
+function formatTargetSummary(item) {
+  const summary = safeText(item.target_summary).trim();
+  const count = toNum(item.target_count, 0);
+  if (!summary) return count > 0 ? `${count} 筆` : '-';
+  return count > 0 ? `${count} 筆: ${summary}` : summary;
+}
+
+function formatLogNote(item) {
+  const parts = [item.error, item.warning, item.skipped]
+    .map((value) => safeText(value).trim())
+    .filter((value) => value);
+  return parts.length ? parts.join(' | ') : '-';
+}
+
+function updateNotifyLogTabButtons() {
+  notifyLogTabButtons.forEach((btn) => {
+    const active = btn.dataset.logChannel === notifyLogChannel;
+    btn.classList.toggle('active', active);
+  });
+}
+
+function updateNotifyLogPager() {
+  const totalPages = notifyLogTotalPages;
+  if (notifyLogPageInfo) {
+    if (!notifyLogTotalRows) {
+      notifyLogPageInfo.textContent = '共 0 筆';
+    } else {
+      const start = (notifyLogPage - 1) * NOTIFY_LOG_PAGE_SIZE + 1;
+      const end = Math.min(notifyLogTotalRows, notifyLogPage * NOTIFY_LOG_PAGE_SIZE);
+      notifyLogPageInfo.textContent = `第 ${notifyLogPage}/${totalPages} 頁（${start}-${end} / ${notifyLogTotalRows}）`;
+    }
+  }
+  if (notifyLogPrevBtn) notifyLogPrevBtn.disabled = notifyLogPage <= 1;
+  if (notifyLogNextBtn) notifyLogNextBtn.disabled = !totalPages || notifyLogPage >= totalPages;
+}
+
+function renderNotificationLogs(rows) {
+  updateNotifyLogTabButtons();
+
+  if (!rows.length) {
+    notifyLogBody.innerHTML = '<tr><td colspan="7">目前沒有通知紀錄</td></tr>';
+    updateNotifyLogPager();
+    return;
+  }
+
+  notifyLogBody.innerHTML = rows.map((item) => `
+    <tr>
+      <td data-label="發送時間">${fmtDate(item.timestamp)}</td>
+      <td data-label="觸發方式">${triggerLabel(item.trigger)}</td>
+      <td data-label="結果">${notificationStatusBadge(item)}</td>
+      <td data-label="異常 / 服務">${formatIssueService(item)}</td>
+      <td data-label="對象" class="log-cell-wrap">${safeText(formatTargetSummary(item))}</td>
+      <td data-label="主旨" class="log-cell-wrap">${safeText(item.subject) || '-'}</td>
+      <td data-label="備註" class="log-cell-wrap">${safeText(formatLogNote(item))}</td>
+    </tr>
+  `).join('');
+
+  updateNotifyLogPager();
+}
+
+async function loadNotificationLogs(options = {}) {
+  const showMessage = options.showMessage !== false;
+  if (showMessage && notifyLogMessage) {
+    notifyLogMessage.textContent = '讀取通知紀錄中...';
+  }
+
+  try {
+    const res = await apiGet({
+      action: 'getNotificationLogs',
+      channel: notifyLogChannel,
+      page: notifyLogPage,
+      page_size: NOTIFY_LOG_PAGE_SIZE
+    });
+
+    notifyLogPage = toNum(res.page, 1);
+    notifyLogTotalPages = toNum(res.total_pages, 0);
+    notifyLogTotalRows = toNum(res.total, 0);
+
+    renderNotificationLogs(res.data || []);
+
+    if (showMessage && notifyLogMessage) {
+      const label = notifyLogChannel === 'line' ? 'LINE' : '郵件';
+      notifyLogMessage.textContent = `已載入 ${label} 通知紀錄`;
+    }
+  } catch (err) {
+    notifyLogTotalPages = 0;
+    notifyLogTotalRows = 0;
+    notifyLogBody.innerHTML = '<tr><td colspan="7">通知紀錄讀取失敗</td></tr>';
+    updateNotifyLogPager();
+    if (notifyLogMessage) {
+      notifyLogMessage.textContent = `通知紀錄讀取失敗: ${safeText(err.message)}`;
+    }
+  }
 }
 
 async function loadHealth(onProgress) {
   if (isLoading) return;
   isLoading = true;
-  healthMessage.textContent = '檢查中...';
+  healthMessage.textContent = '讀取健康檢查中...';
   if (typeof onProgress === 'function') onProgress(10);
 
   try {
@@ -149,16 +280,18 @@ async function loadHealth(onProgress) {
     const apiLatencyMs = Math.round(performance.now() - t0);
 
     const services = res.data || [];
-    const enabledServices = services.filter(s => isEnabled(s.enabled));
+    const enabledServices = services.filter((service) => isEnabled(service.enabled));
     const nowMs = Date.now();
-
-    const analyzed = services.map(service => ({ service, check: analyzeService(service, nowMs) }));
-    const staleList = analyzed.filter(x => x.check.stale && isEnabled(x.service.enabled));
+    const analyzed = services.map((service) => ({
+      service,
+      check: analyzeService(service, nowMs)
+    }));
+    const staleList = analyzed.filter((item) => item.check.stale && isEnabled(item.service.enabled));
 
     const lastCheckMs = enabledServices
-      .map(s => toDate(s.last_check_at))
+      .map((service) => toDate(service.last_check_at))
       .filter(Boolean)
-      .map(d => d.getTime())
+      .map((date) => date.getTime())
       .sort((a, b) => b - a)[0];
 
     let schedulerState = 'healthy';
@@ -177,9 +310,11 @@ async function loadHealth(onProgress) {
     });
 
     renderStaleRows(staleList);
+    if (typeof onProgress === 'function') onProgress(80);
+    await loadNotificationLogs({ showMessage: false });
 
     const nowText = new Date().toLocaleTimeString('zh-TW', { hour12: false });
-    healthMessage.textContent = `最後檢查：${nowText}（每 60 秒自動更新）`;
+    healthMessage.textContent = `最後更新時間 ${nowText}，每 60 秒自動刷新`;
     if (typeof onProgress === 'function') onProgress(100);
   } catch (err) {
     renderSummary({
@@ -190,7 +325,7 @@ async function loadHealth(onProgress) {
       lastCheckAt: null,
       schedulerState: 'stalled'
     });
-    staleBody.innerHTML = '<tr><td colspan="6">無法讀取資料</td></tr>';
+    staleBody.innerHTML = '<tr><td colspan="6">健康檢查讀取失敗</td></tr>';
     healthMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
     if (typeof onProgress === 'function') onProgress(100);
   } finally {
@@ -199,19 +334,21 @@ async function loadHealth(onProgress) {
 }
 
 async function runNowAndCheck() {
-  healthMessage.textContent = '觸發排程中...';
+  healthMessage.textContent = '正在立即執行健康檢查...';
   try {
     const res = await apiPost({ action: 'runNow' });
-    if (!res.ok) throw new Error(res.error || 'runNow 失敗');
-    healthMessage.textContent = '已觸發，5 秒後重新讀取...';
-    window.setTimeout(loadHealth, 5000);
+    if (!res.ok) throw new Error(res.error || 'runNow failed');
+    healthMessage.textContent = '已觸發立即檢查，5 秒後重新整理...';
+    window.setTimeout(() => {
+      loadHealth().catch(() => {});
+    }, 5000);
   } catch (err) {
-    healthMessage.textContent = `觸發失敗: ${safeText(err.message)}`;
+    healthMessage.textContent = `立即執行失敗: ${safeText(err.message)}`;
   }
 }
 
 async function handleRefreshWithOverlay() {
-  await runTransientLoading('重新整理中...', async (setP) => {
+  await runTransientLoading('重新整理健康檢查...', async (setP) => {
     await loadHealth((p) => {
       if (setP) setP(20 + p * 0.8);
     });
@@ -219,21 +356,52 @@ async function handleRefreshWithOverlay() {
 }
 
 async function handleRunNowWithOverlay() {
-  await runTransientLoading('觸發排程中...', async (setP) => {
+  await runTransientLoading('執行健康檢查...', async (setP) => {
     if (setP) setP(35);
     await runNowAndCheck();
     if (setP) setP(100);
   });
 }
 
-refreshBtn.addEventListener('click', handleRefreshWithOverlay);
-runNowBtn.addEventListener('click', handleRunNowWithOverlay);
+function bindNotifyLogEvents() {
+  notifyLogTabButtons.forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const channel = btn.dataset.logChannel || 'mail';
+      if (channel === notifyLogChannel) return;
+      notifyLogChannel = channel;
+      notifyLogPage = 1;
+      await loadNotificationLogs();
+    });
+  });
+
+  if (notifyLogPrevBtn) {
+    notifyLogPrevBtn.addEventListener('click', async () => {
+      if (notifyLogPage <= 1) return;
+      notifyLogPage -= 1;
+      await loadNotificationLogs({ showMessage: false });
+    });
+  }
+
+  if (notifyLogNextBtn) {
+    notifyLogNextBtn.addEventListener('click', async () => {
+      if (!notifyLogTotalPages || notifyLogPage >= notifyLogTotalPages) return;
+      notifyLogPage += 1;
+      await loadNotificationLogs({ showMessage: false });
+    });
+  }
+
+  if (notifyLogRefreshBtn) {
+    notifyLogRefreshBtn.addEventListener('click', async () => {
+      await loadNotificationLogs();
+    });
+  }
+}
 
 async function initFirstLoad() {
   setLoadingOverlay(true);
-  setLoadingProgress(8, '讀取健康資料...');
+  setLoadingProgress(8, '載入健康檢查頁面...');
   try {
-    await loadHealth((p) => setLoadingProgress(p, '讀取健康資料...'));
+    await loadHealth((p) => setLoadingProgress(p, '載入健康檢查頁面...'));
     setLoadingProgress(100, '載入完成');
     loadHostBadge();
   } finally {
@@ -244,6 +412,13 @@ async function initFirstLoad() {
   }
 }
 
+if (refreshBtn) refreshBtn.addEventListener('click', handleRefreshWithOverlay);
+if (runNowBtn) runNowBtn.addEventListener('click', handleRunNowWithOverlay);
+
+bindNotifyLogEvents();
 initFirstLoad();
+
 if (timer) window.clearInterval(timer);
-timer = window.setInterval(loadHealth, 60000);
+timer = window.setInterval(() => {
+  loadHealth().catch(() => {});
+}, 60000);
