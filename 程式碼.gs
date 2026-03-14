@@ -243,6 +243,9 @@ function doGet(e) {
       case "getNotificationLogs":
         result = getNotificationLogs_(p);
         break;
+      case "clearNotificationLogs":
+        result = clearNotificationLogs_();
+        break;
       case "hardDeleteService":
         result = hardDeleteService_(p.id);
         break;
@@ -320,6 +323,9 @@ function doPost(e) {
         break;
       case "getNotificationLogs":
         result = getNotificationLogs_(body);
+        break;
+      case "clearNotificationLogs":
+        result = clearNotificationLogs_();
         break;
       case "hardDeleteService":
         result = hardDeleteService_(body.id);
@@ -1922,6 +1928,26 @@ function getNotificationLogs_(payload) {
     total_pages: totalPages,
     channel: channel
   };
+}
+
+function clearNotificationLogs_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(SHEET_NOTIFY_LOGS);
+  if (!sh) {
+    sh = ss.insertSheet(SHEET_NOTIFY_LOGS);
+    ensureHeaders_(sh, NOTIFY_LOG_HEADERS);
+    return { ok: true, deleted_count: 0 };
+  }
+
+  ensureHeaders_(sh, NOTIFY_LOG_HEADERS);
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) {
+    return { ok: true, deleted_count: 0 };
+  }
+
+  const deletedCount = lastRow - 1;
+  sh.deleteRows(2, deletedCount);
+  return { ok: true, deleted_count: deletedCount };
 }
 
 /*************** Report Config ***************/
