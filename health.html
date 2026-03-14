@@ -14,7 +14,7 @@
   <div id="loadingOverlay" class="loading-overlay">
     <div class="loading-card">
       <div class="loading-text">
-        <span id="loadingLabel">資料載入中...</span>
+        <span id="loadingLabel">載入中...</span>
         <strong id="loadingPercent">0%</strong>
       </div>
       <div class="loading-bar"><div id="loadingBarInner" class="loading-bar-inner"></div></div>
@@ -28,7 +28,7 @@
     </div>
     <nav>
       <a href="./index.html">Dashboard</a>
-      <a href="./admin.html">後台管理</a>
+      <a href="./admin.html">管理設定</a>
       <a class="active" href="./health.html">健康檢查</a>
     </nav>
   </header>
@@ -36,10 +36,10 @@
   <main class="container">
     <section class="panel">
       <div class="panel-header">
-        <h2>系統健康概況</h2>
+        <h2>健康檢查摘要</h2>
         <div class="row-actions">
-          <button id="runNowBtn" class="btn secondary">立即觸發排程</button>
-          <button id="refreshBtn" class="btn">重新整理</button>
+          <button id="runNowBtn" class="btn secondary" type="button">立即執行</button>
+          <button id="refreshBtn" class="btn" type="button">重新整理</button>
         </div>
       </div>
       <div class="summary-grid" id="healthSummary"></div>
@@ -48,24 +48,27 @@
 
     <section class="panel">
       <div class="panel-header">
-        <h2>可疑服務（可能未依頻率更新）</h2>
+        <h2>逾時或異常服務</h2>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>服務</th>
-              <th>頻率(分)</th>
+              <th>服務名稱</th>
+              <th>檢查間隔(分)</th>
               <th>最後檢查</th>
-              <th>下次檢查</th>
-              <th>目前狀態</th>
-              <th>判定</th>
+              <th>下次預定</th>
+              <th>狀態</th>
+              <th>HTTP</th>
+              <th>錯誤訊息</th>
+              <th>原因</th>
             </tr>
           </thead>
           <tbody id="staleBody"></tbody>
         </table>
       </div>
     </section>
+
     <section class="panel">
       <div class="panel-header">
         <h2>通知發送紀錄</h2>

@@ -43,12 +43,15 @@ const TEST_DELETE_DEFAULT_SHEET = SHEET_CHECKS;
 
 const SERVICE_HEADERS = [
   "id", "name", "url", "interval_min", "enabled",
-  "last_check_at", "last_status", "last_http_code", "last_latency_ms",
+  "check_type", "expected_keyword", "forbidden_keyword", "expected_final_url", "secondary_url",
+  "allow_redirects", "max_redirects", "latency_warn_ms", "fail_threshold", "retry_count", "retry_delay_ms",
+  "last_check_at", "last_status", "last_http_code", "last_error_type", "last_error", "last_final_url",
+  "consecutive_failures", "last_latency_ms",
   "next_check_at", "created_at", "updated_at"
 ];
 
 const CHECK_HEADERS = [
-  "timestamp", "service_id", "status", "http_code", "latency_ms", "error"
+  "timestamp", "service_id", "status", "http_code", "latency_ms", "error_type", "error", "final_url"
 ];
 
 function initSheets() {
@@ -123,7 +126,18 @@ function doGet(e) {
         result = addService_({
           name: p.name,
           url: p.url,
-          interval_min: toNum_(p.interval_min, 5)
+          interval_min: toNum_(p.interval_min, 5),
+          check_type: p.check_type,
+          expected_keyword: p.expected_keyword,
+          forbidden_keyword: p.forbidden_keyword,
+          expected_final_url: p.expected_final_url,
+          secondary_url: p.secondary_url,
+          allow_redirects: p.allow_redirects,
+          max_redirects: p.max_redirects,
+          latency_warn_ms: p.latency_warn_ms,
+          fail_threshold: p.fail_threshold,
+          retry_count: p.retry_count,
+          retry_delay_ms: p.retry_delay_ms
         });
         break;
       case "updateService":
@@ -132,7 +146,18 @@ function doGet(e) {
           name: p.name,
           url: p.url,
           interval_min: p.interval_min !== undefined ? toNum_(p.interval_min, 5) : undefined,
-          enabled: p.enabled !== undefined ? toBool_(p.enabled) : undefined
+          enabled: p.enabled !== undefined ? toBool_(p.enabled) : undefined,
+          check_type: p.check_type,
+          expected_keyword: p.expected_keyword,
+          forbidden_keyword: p.forbidden_keyword,
+          expected_final_url: p.expected_final_url,
+          secondary_url: p.secondary_url,
+          allow_redirects: p.allow_redirects !== undefined ? toBool_(p.allow_redirects) : undefined,
+          max_redirects: p.max_redirects !== undefined ? toNum_(p.max_redirects, 5) : undefined,
+          latency_warn_ms: p.latency_warn_ms !== undefined ? toNum_(p.latency_warn_ms, 5000) : undefined,
+          fail_threshold: p.fail_threshold !== undefined ? toNum_(p.fail_threshold, 2) : undefined,
+          retry_count: p.retry_count !== undefined ? toNum_(p.retry_count, 2) : undefined,
+          retry_delay_ms: p.retry_delay_ms !== undefined ? toNum_(p.retry_delay_ms, 1200) : undefined
         });
         break;
       case "deleteService":
@@ -277,6 +302,7 @@ function runScheduler() {
   try {
     const now = new Date();
     const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+    ensureHeaders_(sh, SERVICE_HEADERS);
     const values = sh.getDataRange().getValues();
     if (values.length < 2) {
       maybeSendScheduledReport_(now);
@@ -292,38 +318,341 @@ function runScheduler() {
       if (nextCheck.getTime() > now.getTime()) continue;
 
       const id = row[idx.id];
-      const url = row[idx.url];
       const intervalMin = Math.max(1, toNum_(row[idx.interval_min], 5));
-
-      const result = checkUrl_(url);
+      const service = objFromRow_(values[0], row);
+      const result = checkUrl_(service);
       appendCheckLog_(id, result);
 
       const next = new Date(now.getTime() + intervalMin * 60000);
       sh.getRange(r + 1, idx.last_check_at + 1).setValue(now);
       sh.getRange(r + 1, idx.last_status + 1).setValue(result.status);
       sh.getRange(r + 1, idx.last_http_code + 1).setValue(result.httpCode);
+      if (idx.last_error_type !== undefined) sh.getRange(r + 1, idx.last_error_type + 1).setValue(result.errorType || "");
+      if (idx.last_error !== undefined) {
+        sh.getRange(r + 1, idx.last_error + 1).setValue(result.error || "");
+      }
+      if (idx.last_final_url !== undefined) sh.getRange(r + 1, idx.last_final_url + 1).setValue(result.finalUrl || "");
+      if (idx.consecutive_failures !== undefined) sh.getRange(r + 1, idx.consecutive_failures + 1).setValue(result.failStreak || 0);
       sh.getRange(r + 1, idx.last_latency_ms + 1).setValue(result.latencyMs);
       sh.getRange(r + 1, idx.next_check_at + 1).setValue(next);
       sh.getRange(r + 1, idx.updated_at + 1).setValue(now);
     }
 
+    invalidateServicesCache_();
     maybeSendScheduledReport_(now);
   } finally {
     lock.releaseLock();
   }
 }
 
-function checkUrl_(url) {
-  const start = Date.now();
-  try {
-    const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
-    const code = resp.getResponseCode();
-    const latency = Date.now() - start;
-    const up = (code >= 200 && code < 400) || code === 401 || code === 403;
-    return { status: up ? "UP" : "DOWN", httpCode: code, latencyMs: latency, error: "" };
-  } catch (err) {
-    return { status: "DOWN", httpCode: 0, latencyMs: Date.now() - start, error: String(err) };
+function defaultServiceCheckConfig_() {
+  return {
+    check_type: "status_code",
+    expected_keyword: "",
+    forbidden_keyword: "",
+    expected_final_url: "",
+    secondary_url: "",
+    allow_redirects: true,
+    max_redirects: 5,
+    latency_warn_ms: 5000,
+    fail_threshold: 2,
+    retry_count: 2,
+    retry_delay_ms: 1200,
+    consecutive_failures: 0
+  };
+}
+
+function normalizeServiceConfig_(source) {
+  const merged = Object.assign({}, defaultServiceCheckConfig_(), source || {});
+  const checkType = String(merged.check_type || "status_code").trim().toLowerCase();
+  merged.check_type = checkType === "keyword" ? "keyword" : "status_code";
+  merged.expected_keyword = String(merged.expected_keyword || "").trim();
+  merged.forbidden_keyword = String(merged.forbidden_keyword || "").trim();
+  merged.expected_final_url = String(merged.expected_final_url || "").trim();
+  merged.secondary_url = String(merged.secondary_url || "").trim();
+  merged.allow_redirects = toBool_(merged.allow_redirects);
+  merged.max_redirects = Math.max(0, Math.min(10, toNum_(merged.max_redirects, 5)));
+  merged.latency_warn_ms = Math.max(0, toNum_(merged.latency_warn_ms, 5000));
+  merged.fail_threshold = Math.max(1, toNum_(merged.fail_threshold, 2));
+  merged.retry_count = Math.max(1, Math.min(5, toNum_(merged.retry_count, 2)));
+  merged.retry_delay_ms = Math.max(0, Math.min(10000, toNum_(merged.retry_delay_ms, 1200)));
+  merged.consecutive_failures = Math.max(0, toNum_(merged.consecutive_failures, 0));
+  return merged;
+}
+
+function classifyFetchError_(err) {
+  const text = String(err || "");
+  if (/timed out|deadline/i.test(text)) return "TIMEOUT";
+  if (/dns|resolve|host/i.test(text)) return "DNS_ERROR";
+  if (/ssl|tls|certificate|handshake|schannel/i.test(text)) return "TLS_ERROR";
+  if (/refused|reset|connect|socket|network|unreachable/i.test(text)) return "NETWORK_ERROR";
+  return "FETCH_ERROR";
+}
+
+function classifyHttpFailure_(code, bodyText) {
+  const body = String(bodyText || "");
+  if (code === 401) return "";
+  if (code === 403 && /access denied|forbidden|captcha|cloudflare|just a moment/i.test(body)) return "BLOCKED";
+  if (code === 403) return "";
+  if (code === 429) return "RATE_LIMIT";
+  if (code >= 500) return "HTTP_5XX";
+  if (code >= 400) return "HTTP_4XX";
+  return "";
+}
+
+function delayMs_(ms) {
+  const waitMs = Math.max(0, Number(ms) || 0);
+  if (!waitMs) return;
+  Utilities.sleep(waitMs);
+}
+
+function fetchWithRedirectTrace_(url, config) {
+  let currentUrl = url;
+  let redirects = 0;
+  let response = null;
+
+  while (true) {
+    response = UrlFetchApp.fetch(currentUrl, {
+      muteHttpExceptions: true,
+      followRedirects: false
+    });
+    const code = Number(response.getResponseCode() || 0);
+    const headers = response.getHeaders ? response.getHeaders() : {};
+    const location = String(headers.Location || headers.location || "").trim();
+    const isRedirect = code >= 300 && code < 400 && !!location;
+
+    if (!isRedirect) {
+      return { response: response, finalUrl: currentUrl, redirects: redirects, exceeded: false };
+    }
+    if (!config.allow_redirects) {
+      return { response: response, finalUrl: currentUrl, redirects: redirects, exceeded: false };
+    }
+    if (redirects >= config.max_redirects) {
+      return { response: response, finalUrl: currentUrl, redirects: redirects, exceeded: true };
+    }
+
+    currentUrl = String(new URL(location, currentUrl));
+    redirects += 1;
   }
+}
+
+function runSingleCheckAttempt_(url, config) {
+  const start = Date.now();
+
+  try {
+    const trace = fetchWithRedirectTrace_(url, config);
+    const resp = trace.response;
+    const code = Number(resp.getResponseCode() || 0);
+    const latency = Date.now() - start;
+    const finalUrl = String(trace.finalUrl || url).trim();
+    const bodyText = String(resp.getContentText() || "");
+
+    if (trace.exceeded) {
+      return {
+        ok: false,
+        status: "DOWN",
+        httpCode: code,
+        latencyMs: latency,
+        errorType: "REDIRECT_ERROR",
+        error: `Redirects exceeded limit ${config.max_redirects}`,
+        finalUrl: finalUrl,
+        observedUrl: url
+      };
+    }
+
+    if (!config.allow_redirects && code >= 300 && code < 400) {
+      return {
+        ok: false,
+        status: "DOWN",
+        httpCode: code,
+        latencyMs: latency,
+        errorType: "REDIRECT_ERROR",
+        error: `Unexpected redirect from ${url}`,
+        finalUrl: finalUrl,
+        observedUrl: url
+      };
+    }
+
+    const httpErrorType = classifyHttpFailure_(code, bodyText);
+    const isHttpOk = (code >= 200 && code < 400) || code === 401 || code === 403;
+
+    if (httpErrorType === "BLOCKED") {
+      return {
+        ok: false,
+        status: "DOWN",
+        httpCode: code,
+        latencyMs: latency,
+        errorType: "BLOCKED",
+        error: `Request blocked with HTTP ${code}`,
+        finalUrl: finalUrl || url,
+        observedUrl: url
+      };
+    }
+
+    if (!isHttpOk) {
+      return {
+        ok: false,
+        status: "DOWN",
+        httpCode: code,
+        latencyMs: latency,
+        errorType: httpErrorType || "HTTP_ERROR",
+        error: `HTTP ${code}`,
+        finalUrl: finalUrl || url,
+        observedUrl: url
+      };
+    }
+
+    if (config.expected_final_url) {
+      const expected = String(config.expected_final_url || "").trim();
+      const actual = finalUrl || url;
+      if (actual !== expected) {
+        return {
+          ok: false,
+          status: "DOWN",
+          httpCode: code,
+          latencyMs: latency,
+          errorType: "REDIRECT_ERROR",
+          error: `Final URL mismatch: ${actual}`,
+          finalUrl: actual,
+          observedUrl: url
+        };
+      }
+    }
+
+    if (config.check_type === "keyword") {
+      if (config.expected_keyword && bodyText.indexOf(config.expected_keyword) === -1) {
+        return {
+          ok: false,
+          status: "DOWN",
+          httpCode: code,
+          latencyMs: latency,
+          errorType: "CONTENT_MISMATCH",
+          error: `Missing keyword: ${config.expected_keyword}`,
+          finalUrl: finalUrl || url,
+          observedUrl: url
+        };
+      }
+      if (config.forbidden_keyword && bodyText.indexOf(config.forbidden_keyword) >= 0) {
+        return {
+          ok: false,
+          status: "DOWN",
+          httpCode: code,
+          latencyMs: latency,
+          errorType: "CONTENT_MISMATCH",
+          error: `Forbidden keyword found: ${config.forbidden_keyword}`,
+          finalUrl: finalUrl || url,
+          observedUrl: url
+        };
+      }
+    }
+
+    if (config.latency_warn_ms > 0 && latency > config.latency_warn_ms) {
+      return {
+        ok: true,
+        status: "SLOW",
+        httpCode: code,
+        latencyMs: latency,
+        errorType: "SLOW",
+        error: `Latency ${latency} ms exceeded ${config.latency_warn_ms} ms`,
+        finalUrl: finalUrl || url,
+        observedUrl: url
+      };
+    }
+
+    return {
+      ok: true,
+      status: "UP",
+      httpCode: code,
+      latencyMs: latency,
+      errorType: "",
+      error: "",
+      finalUrl: finalUrl || url,
+      observedUrl: url
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: "DOWN",
+      httpCode: 0,
+      latencyMs: Date.now() - start,
+      errorType: classifyFetchError_(err),
+      error: String(err),
+      finalUrl: "",
+      observedUrl: url
+    };
+  }
+}
+
+function summarizeSampleResults_(results) {
+  return results.map(function (item, index) {
+    const part = `#${index + 1} ${item.observedUrl} => ${item.status} HTTP ${item.httpCode || 0}`;
+    return item.error ? `${part} (${truncateText_(item.error, 120)})` : part;
+  }).join(" | ");
+}
+
+function checkUrl_(service) {
+  const config = normalizeServiceConfig_(service);
+  const urls = [String(service.url || "").trim()];
+  if (config.secondary_url) urls.push(config.secondary_url);
+
+  const sampleResults = [];
+  urls.forEach(function (targetUrl) {
+    for (let attempt = 0; attempt < config.retry_count; attempt++) {
+      sampleResults.push(runSingleCheckAttempt_(targetUrl, config));
+      if (attempt < config.retry_count - 1) delayMs_(config.retry_delay_ms);
+    }
+  });
+
+  const successResults = sampleResults.filter(function (item) { return item.ok; });
+  const failResults = sampleResults.filter(function (item) { return !item.ok; });
+  const hasSlow = successResults.some(function (item) { return item.status === "SLOW"; });
+  const allFailed = sampleResults.length > 0 && failResults.length === sampleResults.length;
+  const hadMixedResults = successResults.length > 0 && failResults.length > 0;
+  const previousFailStreak = Math.max(0, toNum_(service.consecutive_failures, 0));
+  const nextFailStreak = allFailed ? previousFailStreak + 1 : 0;
+  const representativeFailure = failResults[failResults.length - 1] || null;
+  const representativeSuccess = successResults[successResults.length - 1] || null;
+  const sampleSummary = summarizeSampleResults_(sampleResults);
+
+  if (hadMixedResults) {
+    return {
+      status: "UNSTABLE",
+      httpCode: representativeFailure ? representativeFailure.httpCode : (representativeSuccess ? representativeSuccess.httpCode : 0),
+      latencyMs: representativeSuccess ? representativeSuccess.latencyMs : (representativeFailure ? representativeFailure.latencyMs : 0),
+      errorType: "UNSTABLE",
+      error: sampleSummary,
+      finalUrl: representativeSuccess ? representativeSuccess.finalUrl : (representativeFailure ? representativeFailure.finalUrl : ""),
+      failStreak: previousFailStreak,
+      sampleSummary: sampleSummary
+    };
+  }
+
+  if (allFailed) {
+    const reachedThreshold = nextFailStreak >= config.fail_threshold;
+    return {
+      status: reachedThreshold ? (representativeFailure.errorType || "DOWN") : "UNSTABLE",
+      httpCode: representativeFailure ? representativeFailure.httpCode : 0,
+      latencyMs: representativeFailure ? representativeFailure.latencyMs : 0,
+      errorType: representativeFailure ? representativeFailure.errorType : "DOWN",
+      error: reachedThreshold
+        ? (representativeFailure ? representativeFailure.error : "All checks failed")
+        : `Failure ${nextFailStreak}/${config.fail_threshold}: ${representativeFailure ? representativeFailure.error : sampleSummary}`,
+      finalUrl: representativeFailure ? representativeFailure.finalUrl : "",
+      failStreak: nextFailStreak,
+      sampleSummary: sampleSummary
+    };
+  }
+
+  return {
+    status: hasSlow ? "SLOW" : "UP",
+    httpCode: representativeSuccess ? representativeSuccess.httpCode : 0,
+    latencyMs: representativeSuccess ? representativeSuccess.latencyMs : 0,
+    errorType: hasSlow ? "SLOW" : "",
+    error: hasSlow && representativeSuccess ? representativeSuccess.error : "",
+    finalUrl: representativeSuccess ? representativeSuccess.finalUrl : "",
+    failStreak: 0,
+    sampleSummary: sampleSummary
+  };
 }
 
 /*************** Service CRUD ***************/
@@ -331,7 +660,9 @@ function addService_(b) {
   if (!b || !b.url) return { ok: false, error: "Missing url" };
 
   const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+  ensureHeaders_(sh, SERVICE_HEADERS);
   const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const cfg = normalizeServiceConfig_(b);
 
   const now = new Date();
   const id = Utilities.getUuid();
@@ -341,9 +672,24 @@ function addService_(b) {
     url: b.url,
     interval_min: Math.max(1, toNum_(b.interval_min, 5)),
     enabled: true,
+    check_type: cfg.check_type,
+    expected_keyword: cfg.expected_keyword,
+    forbidden_keyword: cfg.forbidden_keyword,
+    expected_final_url: cfg.expected_final_url,
+    secondary_url: cfg.secondary_url,
+    allow_redirects: cfg.allow_redirects,
+    max_redirects: cfg.max_redirects,
+    latency_warn_ms: cfg.latency_warn_ms,
+    fail_threshold: cfg.fail_threshold,
+    retry_count: cfg.retry_count,
+    retry_delay_ms: cfg.retry_delay_ms,
     last_check_at: "",
     last_status: "",
     last_http_code: "",
+    last_error_type: "",
+    last_error: "",
+    last_final_url: "",
+    consecutive_failures: 0,
     last_latency_ms: "",
     next_check_at: now,
     created_at: now,
@@ -359,6 +705,7 @@ function updateService_(b) {
   if (!b || !b.id) return { ok: false, error: "Missing id" };
 
   const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+  ensureHeaders_(sh, SERVICE_HEADERS);
   const values = sh.getDataRange().getValues();
   if (values.length < 2) return { ok: false, error: "No data" };
   const idx = indexMap_(values[0]);
@@ -370,6 +717,17 @@ function updateService_(b) {
     if (b.url !== undefined) sh.getRange(r + 1, idx.url + 1).setValue(b.url);
     if (b.interval_min !== undefined) sh.getRange(r + 1, idx.interval_min + 1).setValue(Math.max(1, toNum_(b.interval_min, 5)));
     if (b.enabled !== undefined) sh.getRange(r + 1, idx.enabled + 1).setValue(!!b.enabled);
+    if (b.check_type !== undefined && idx.check_type !== undefined) sh.getRange(r + 1, idx.check_type + 1).setValue(normalizeServiceConfig_(b).check_type);
+    if (b.expected_keyword !== undefined && idx.expected_keyword !== undefined) sh.getRange(r + 1, idx.expected_keyword + 1).setValue(String(b.expected_keyword || "").trim());
+    if (b.forbidden_keyword !== undefined && idx.forbidden_keyword !== undefined) sh.getRange(r + 1, idx.forbidden_keyword + 1).setValue(String(b.forbidden_keyword || "").trim());
+    if (b.expected_final_url !== undefined && idx.expected_final_url !== undefined) sh.getRange(r + 1, idx.expected_final_url + 1).setValue(String(b.expected_final_url || "").trim());
+    if (b.secondary_url !== undefined && idx.secondary_url !== undefined) sh.getRange(r + 1, idx.secondary_url + 1).setValue(String(b.secondary_url || "").trim());
+    if (b.allow_redirects !== undefined && idx.allow_redirects !== undefined) sh.getRange(r + 1, idx.allow_redirects + 1).setValue(!!b.allow_redirects);
+    if (b.max_redirects !== undefined && idx.max_redirects !== undefined) sh.getRange(r + 1, idx.max_redirects + 1).setValue(Math.max(0, Math.min(10, toNum_(b.max_redirects, 5))));
+    if (b.latency_warn_ms !== undefined && idx.latency_warn_ms !== undefined) sh.getRange(r + 1, idx.latency_warn_ms + 1).setValue(Math.max(0, toNum_(b.latency_warn_ms, 5000)));
+    if (b.fail_threshold !== undefined && idx.fail_threshold !== undefined) sh.getRange(r + 1, idx.fail_threshold + 1).setValue(Math.max(1, toNum_(b.fail_threshold, 2)));
+    if (b.retry_count !== undefined && idx.retry_count !== undefined) sh.getRange(r + 1, idx.retry_count + 1).setValue(Math.max(1, Math.min(5, toNum_(b.retry_count, 2))));
+    if (b.retry_delay_ms !== undefined && idx.retry_delay_ms !== undefined) sh.getRange(r + 1, idx.retry_delay_ms + 1).setValue(Math.max(0, Math.min(10000, toNum_(b.retry_delay_ms, 1200))));
     sh.getRange(r + 1, idx.updated_at + 1).setValue(new Date());
     invalidateServicesCache_();
     return { ok: true };
@@ -405,6 +763,7 @@ function listServices_() {
     try { return JSON.parse(cached); } catch (_) {}
   }
   var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+  ensureHeaders_(sh, SERVICE_HEADERS);
   var values = sh.getDataRange().getValues();
   var result = values.length < 2
     ? { ok: true, data: [] }
@@ -585,6 +944,7 @@ function metricsAll_(hours) {
 
 function appendCheckLog_(serviceId, result) {
   const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_CHECKS);
+  ensureHeaders_(sh, CHECK_HEADERS);
   const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   const rowObj = {
     timestamp: new Date(),
@@ -592,7 +952,9 @@ function appendCheckLog_(serviceId, result) {
     status: result.status,
     http_code: result.httpCode,
     latency_ms: result.latencyMs,
-    error: result.error || ""
+    error_type: result.errorType || "",
+    error: result.error || "",
+    final_url: result.finalUrl || ""
   };
   sh.appendRow(rowFromObj_(header, rowObj));
 }
@@ -1273,17 +1635,26 @@ function callNotifierSafe_(channel, fn) {
   }
 }
 
+function isConfirmedDownStatus_(status) {
+  const value = String(status || "").toUpperCase();
+  return value === "DOWN";
+}
+
 function sendStatusReport_(cfg, forceSend, now) {
   const sendMail = cfg.notify_mode !== "line_only";
   const recipients = parseRecipients_(cfg.recipients);
   const eventTime = now || new Date();
   const services = (listServices_().data || []).filter(function (item) { return toBool_(item.enabled); });
   const issues = services.filter(function (item) {
-    return String(item.last_status || "").toUpperCase() !== "UP";
+    return isConfirmedDownStatus_(item.last_status);
   });
   const upCount = services.length - issues.length;
+  const shouldSendLine = cfg.notify_mode === "mail_line" || cfg.notify_mode === "all" || cfg.notify_mode === "line_only";
+  const shouldSendTeams = cfg.notify_mode === "mail_teams" || cfg.notify_mode === "all";
+  const shouldDispatchExtraChannels = forceSend || issues.length > 0;
+  const shouldSendMailNow = sendMail && (forceSend || !cfg.only_on_issue || issues.length > 0);
 
-  if (!forceSend && cfg.only_on_issue && issues.length === 0) {
+  if (!shouldSendMailNow && !(shouldDispatchExtraChannels && (shouldSendLine || shouldSendTeams))) {
     return { ok: true, sent: false, skipped: "No issue" };
   }
 
@@ -1303,7 +1674,7 @@ function sendStatusReport_(cfg, forceSend, now) {
     warning: ""
   };
 
-  if (sendMail && !recipients.length) {
+  if (shouldSendMailNow && !recipients.length) {
     const failedChannels = [{ channel: "mail", sent: false, error: "No recipients configured" }];
     appendNotificationLogs_(logMeta, failedChannels);
     return {
@@ -1438,7 +1809,7 @@ function sendStatusReport_(cfg, forceSend, now) {
   }
 
   const channels = [];
-  if (sendMail) {
+  if (shouldSendMailNow) {
     let mailResult = { channel: "mail", sent: true, target_count: recipients.length };
     try {
       GmailApp.sendEmail(recipients.join(","), subject, plain, { htmlBody: htmlBody });
@@ -1447,10 +1818,6 @@ function sendStatusReport_(cfg, forceSend, now) {
     }
     channels.push(mailResult);
   }
-
-  const shouldSendLine = cfg.notify_mode === "mail_line" || cfg.notify_mode === "all" || cfg.notify_mode === "line_only";
-  const shouldSendTeams = cfg.notify_mode === "mail_teams" || cfg.notify_mode === "all";
-  const shouldDispatchExtraChannels = forceSend || issues.length > 0;
 
   if (shouldDispatchExtraChannels && shouldSendLine) {
     channels.push(callNotifierSafe_("line", function () {

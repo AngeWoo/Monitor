@@ -8,13 +8,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./assets/style.css?v=20260311-a005" />
+  <link rel="stylesheet" href="./assets/style.css?v=20260314-a010" />
 </head>
 <body>
   <div id="loadingOverlay" class="loading-overlay">
     <div class="loading-card">
       <div class="loading-text">
-        <span id="loadingLabel">資料載入中...</span>
+        <span id="loadingLabel">載入中...</span>
         <strong id="loadingPercent">0%</strong>
       </div>
       <div class="loading-bar"><div id="loadingBarInner" class="loading-bar-inner"></div></div>
@@ -24,11 +24,11 @@
   <header class="topbar">
     <div>
       <h1>Service Monitor</h1>
-      <p>後台管理 &nbsp;<span id="hostBadge" class="host-badge" title="監控來源主機"></span></p>
+      <p>管理設定 &nbsp;<span id="hostBadge" class="host-badge" title="監控來源主機"></span></p>
     </div>
     <nav>
       <a href="./index.html">Dashboard</a>
-      <a class="active" href="./admin.html">後台管理</a>
+      <a class="active" href="./admin.html">管理設定</a>
       <a href="./health.html">健康檢查</a>
     </nav>
   </header>
@@ -36,19 +36,19 @@
   <main class="container admin-grid">
     <section class="panel">
       <div class="panel-header">
-        <h2>狀態報告通知</h2>
+        <h2>通知設定</h2>
         <div class="row-actions">
           <button id="sendReportNowBtn" class="btn secondary" type="button">立即寄送測試報告</button>
-          <button id="reloadReportBtn" class="btn" type="button">載入設定</button>
+          <button id="reloadReportBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
       <form id="reportForm" class="report-grid">
         <label class="field-span-all">
-          監控站名稱（顯示於郵件/LINE 通知標題，留空則自動使用 Dashboard 網域）
-          <input name="monitor_label" placeholder="例：巫志良的MacBook Pro 或 Production Server" />
+          監控站名稱
+          <input name="monitor_label" placeholder="例如：Production / Office NAS / Taiwan IDC" />
         </label>
         <label class="field-span-all">
-          收件人（可多位，逗號分隔）
+          Mail 收件人
           <input name="recipients" placeholder="ops@example.com, dev@example.com" />
         </label>
         <label class="report-col-mode">
@@ -62,41 +62,41 @@
           </select>
         </label>
         <label class="report-col-frequency">
-          報告頻率
+          發送頻率
           <select name="frequency">
             <option value="hourly">每小時</option>
             <option value="daily">每天</option>
           </select>
         </label>
         <label class="report-col-daily-hour">
-          每日報告時間（僅 daily）
+          每日發送時間（0-23）
           <input name="daily_hour" type="number" min="0" max="23" value="9" />
         </label>
         <div class="check-row report-col-options">
           <label class="check-item">
             <input name="enabled" type="checkbox" checked />
-            <span>啟用寄送</span>
+            <span>啟用通知</span>
           </label>
           <label class="check-item">
             <input name="only_on_issue" type="checkbox" checked />
-            <span>僅異常時寄送</span>
+            <span>只在確認 DOWN 時通知</span>
           </label>
         </div>
         <label class="field-span-all">
-          LINE Channel Access Token（選填；模式含 LINE 時必填）
+          LINE Channel Access Token
           <input name="line_channel_access_token" placeholder="LINE Messaging API Channel Access Token" />
         </label>
         <label class="field-span-all">
-          LINE To（選填；可留空，系統會自動發送給所有已記錄 User）
-          <input name="line_to" placeholder="可填單一ID、逗號分隔多個ID，或 JSON 陣列（例如 [\"U...\",\"U...\"]）" />
+          LINE To
+          <input name="line_to" placeholder="可填單一 ID、逗號分隔、或 JSON 陣列" />
         </label>
         <p id="lineUserStats" class="message">Recorded LINE users: 0</p>
         <label class="field-span-all">
-          Teams Webhook URL（選填；模式含 Teams 時必填）
+          Teams Webhook URL
           <input name="teams_webhook_url" type="url" placeholder="https://..." />
         </label>
         <div class="report-actions report-col-submit">
-          <button class="btn report-save-btn" type="submit">儲存設定</button>
+          <button class="btn report-save-btn" type="submit">儲存通知設定</button>
         </div>
       </form>
       <p id="reportMessage" class="message"></p>
@@ -112,20 +112,20 @@
       </div>
       <form id="deleteTestDataForm" class="test-data-grid">
         <label>
-          選擇日期（下拉）
+          已存在日期
           <select id="deleteTestDataDateSelect" name="date_select">
-            <option value="">-- 載入中 --</option>
+            <option value="">-- 請選擇 --</option>
           </select>
         </label>
         <label>
-          或手動輸入日期
+          手動輸入日期
           <input name="date_manual" type="date" />
         </label>
-        <button id="deleteTestDataSubmitBtn" class="btn danger" type="submit">刪除該日期資料</button>
+        <button id="deleteTestDataSubmitBtn" class="btn danger" type="submit">刪除指定日期資料</button>
       </form>
       <div id="deleteProgressWrap" class="hidden" style="margin-top:10px;">
         <div class="loading-text">
-          <span>刪除中，請稍候...</span>
+          <span>刪除中...</span>
           <strong id="deleteProgressPct">0%</strong>
         </div>
         <div class="loading-bar"><div id="deleteProgressBar" class="loading-bar-inner"></div></div>
@@ -135,20 +135,84 @@
 
     <section class="panel">
       <h2>新增服務</h2>
-      <form id="addForm" class="form-grid">
+      <p class="hint service-defaults-intro">未填欄位會套用系統預設值，下面每個設定在服務管理區也會依這份規則運作。</p>
+      <div class="service-defaults-grid">
+        <div><strong>服務名稱</strong><span>必填，無預設值</span></div>
+        <div><strong>URL</strong><span>必填，無預設值</span></div>
+        <div><strong>檢查間隔</strong><span>預設 5 分鐘</span></div>
+        <div><strong>檢查類型</strong><span>預設 HTTP 狀態碼</span></div>
+        <div><strong>必須包含關鍵字</strong><span>預設空白，不檢查</span></div>
+        <div><strong>不可包含關鍵字</strong><span>預設空白，不檢查</span></div>
+        <div><strong>預期最終網址</strong><span>預設空白，不限制</span></div>
+        <div><strong>第二觀測網址</strong><span>預設空白，單一觀測</span></div>
+        <div><strong>允許跳轉</strong><span>預設啟用</span></div>
+        <div><strong>最大跳轉次數</strong><span>預設 5 次</span></div>
+        <div><strong>延遲警戒</strong><span>預設 5000 ms</span></div>
+        <div><strong>失敗門檻</strong><span>預設連續 2 次才判定 down</span></div>
+        <div><strong>重試次數</strong><span>預設 2 次</span></div>
+        <div><strong>重試間隔</strong><span>預設 1200 ms</span></div>
+      </div>
+      <form id="addForm" class="form-grid service-add-grid">
         <label>
           服務名稱
           <input required name="name" placeholder="API Server" />
         </label>
         <label>
-          監控網址
+          URL
           <input required name="url" type="url" placeholder="https://example.com/health" />
         </label>
         <label>
-          檢查頻率（分鐘）
+          檢查間隔(分)
           <input required name="interval_min" type="number" min="1" max="1440" value="5" />
         </label>
-        <button class="btn" type="submit">新增</button>
+        <label>
+          檢測方式
+          <select name="check_type">
+            <option value="status_code">HTTP 狀態碼</option>
+            <option value="keyword">關鍵字驗證</option>
+          </select>
+        </label>
+        <label>
+          必須包含關鍵字
+          <input name="expected_keyword" placeholder="例如：Welcome / OK / healthy" />
+        </label>
+        <label>
+          不可包含關鍵字
+          <input name="forbidden_keyword" placeholder="例如：Error / Maintenance" />
+        </label>
+        <label>
+          預期最終網址
+          <input name="expected_final_url" type="url" placeholder="https://example.com/final" />
+        </label>
+        <label>
+          第二觀測網址
+          <input name="secondary_url" type="url" placeholder="https://backup.example.com/health" />
+        </label>
+        <label>
+          最大跳轉次數
+          <input name="max_redirects" type="number" min="0" max="10" value="5" />
+        </label>
+        <label>
+          延遲警戒(ms)
+          <input name="latency_warn_ms" type="number" min="0" max="600000" value="5000" />
+        </label>
+        <label>
+          失敗門檻(連續次數)
+          <input name="fail_threshold" type="number" min="1" max="10" value="2" />
+        </label>
+        <label>
+          重試次數
+          <input name="retry_count" type="number" min="1" max="5" value="2" />
+        </label>
+        <label>
+          重試間隔(ms)
+          <input name="retry_delay_ms" type="number" min="0" max="10000" value="1200" />
+        </label>
+        <label class="check-item">
+          <input name="allow_redirects" type="checkbox" checked />
+          <span>允許跳轉</span>
+        </label>
+        <button class="btn" type="submit">新增服務</button>
       </form>
       <p id="addMessage" class="message"></p>
     </section>
@@ -157,31 +221,16 @@
       <div class="panel-header">
         <h2>服務管理</h2>
         <div class="row-actions">
-          <button id="runNowBtn" class="btn secondary">立即執行檢查</button>
-          <button id="reloadBtn" class="btn">重新整理</button>
+          <button id="runNowBtn" class="btn secondary" type="button">立即執行健康檢查</button>
+          <button id="reloadBtn" class="btn" type="button">重新整理</button>
         </div>
       </div>
-
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>名稱</th>
-              <th>URL</th>
-              <th>頻率(分)</th>
-              <th>啟用</th>
-              <th>更新</th>
-              <th>停用</th>
-              <th>刪除</th>
-            </tr>
-          </thead>
-          <tbody id="adminServicesBody"></tbody>
-        </table>
-      </div>
+      <p class="hint">卡片主視圖只保留常用欄位，進階檢測規則收在可展開區塊，直接在卡片上編輯即可。</p>
+      <div id="adminServicesBody" class="service-admin-list"></div>
       <p id="adminMessage" class="message"></p>
     </section>
   </main>
 
-  <script type="module" src="./assets/admin.js?v=20260311-a005"></script>
+  <script type="module" src="./assets/admin.js?v=20260314-a010"></script>
 </body>
 </html>
