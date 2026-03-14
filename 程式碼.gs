@@ -41,6 +41,7 @@ const PROP_REPORT_LAST_SLOT = "REPORT_LAST_SLOT";
 const PROP_DASHBOARD_URL = "DASHBOARD_URL";
 const PROP_LINE_TARGETS = "LINE_TARGETS";
 const PROP_SERVICE_RECOMMENDATION_MIGRATION = "SERVICE_RECOMMENDED_SETTINGS_V1";
+const PROP_PROBE_RUN_SIGNAL = "PROBE_RUN_SIGNAL";
 const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
 const PROBE_RESULT_GRACE_MS = 2 * 60 * 1000;
 
@@ -156,6 +157,12 @@ function doGet(e) {
       case "clearProbeState":
         result = clearProbeState_(p);
         break;
+      case "refreshServiceNow":
+        result = refreshServiceNow_(p);
+        break;
+      case "getProbeRunSignal":
+        result = getProbeRunSignal_();
+        break;
       case "listServices":
         result = listServices_();
         break;
@@ -207,8 +214,7 @@ function doGet(e) {
         result = deleteTestDataByDate_(p);
         break;
       case "runNow":
-        runScheduler();
-        result = { ok: true };
+        result = runNow_(p);
         break;
       case "getReportConfig":
         result = { ok: true, data: getReportConfig_() };
@@ -286,8 +292,7 @@ function doPost(e) {
         result = deleteTestDataByDate_(body);
         break;
       case "runNow":
-        runScheduler();
-        result = { ok: true };
+        result = runNow_(body);
         break;
       case "getReportConfig":
         result = { ok: true, data: getReportConfig_() };
@@ -340,6 +345,12 @@ function doPost(e) {
       case "clearProbeState":
         result = clearProbeState_(body);
         break;
+      case "refreshServiceNow":
+        result = refreshServiceNow_(body);
+        break;
+      case "getProbeRunSignal":
+        result = getProbeRunSignal_();
+        break;
       default:
         result = { ok: false, error: "Unknown action" };
     }
@@ -350,52 +361,95 @@ function doPost(e) {
   }
 }
 
+function runServiceChecks_(options) {
+  var opts = options || {};
+  var now = opts.now instanceof Date ? opts.now : new Date();
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+  ensureHeaders_(sh, SERVICE_HEADERS);
+  applyRecommendedServiceSettingsIfNeeded_();
+  var values = sh.getDataRange().getValues();
+  var onlineProbes = getOnlineProbes_(now.getTime());
+  var checkedServices = [];
+  if (values.length < 2) {
+    return {
+      ok: true,
+      now: now,
+      checked_services: checkedServices,
+      checked_count: 0,
+      online_probe_count: onlineProbes.length,
+      probe_requested: false
+    };
+  }
+
+  var idx = indexMap_(values[0]);
+  var forceAll = !!opts.force_all;
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    if (!toBool_(row[idx.enabled])) continue;
+
+    if (!forceAll) {
+      var nextCheck = row[idx.next_check_at] ? new Date(row[idx.next_check_at]) : new Date(0);
+      if (nextCheck.getTime() > now.getTime()) continue;
+    }
+
+    var id = row[idx.id];
+    var intervalMin = Math.max(1, toNum_(row[idx.interval_min], 5));
+    var service = objFromRow_(values[0], row);
+    var result = checkUrl_(service);
+    appendCheckLog_(id, result);
+    checkedServices.push({
+      id: id,
+      name: service.name || service.url || id
+    });
+
+    var next = new Date(now.getTime() + intervalMin * 60000);
+    sh.getRange(r + 1, idx.last_check_at + 1).setValue(now);
+    sh.getRange(r + 1, idx.last_status + 1).setValue(result.status);
+    sh.getRange(r + 1, idx.last_http_code + 1).setValue(result.httpCode);
+    if (idx.last_error_type !== undefined) sh.getRange(r + 1, idx.last_error_type + 1).setValue(result.errorType || "");
+    if (idx.last_error !== undefined) sh.getRange(r + 1, idx.last_error + 1).setValue(result.error || "");
+    if (idx.last_final_url !== undefined) sh.getRange(r + 1, idx.last_final_url + 1).setValue(result.finalUrl || "");
+    if (idx.consecutive_failures !== undefined) sh.getRange(r + 1, idx.consecutive_failures + 1).setValue(result.failStreak || 0);
+    sh.getRange(r + 1, idx.last_latency_ms + 1).setValue(result.latencyMs);
+    sh.getRange(r + 1, idx.next_check_at + 1).setValue(next);
+    sh.getRange(r + 1, idx.updated_at + 1).setValue(now);
+  }
+
+  invalidateServicesCache_();
+  var probeRequested = false;
+  if (onlineProbes.length && checkedServices.length && toBool_(opts.request_probe !== undefined ? opts.request_probe : true)) {
+    var firstChecked = checkedServices[0];
+    var isSingleService = checkedServices.length === 1;
+    requestProbeRunSignal_({
+      service_id: forceAll ? "" : (isSingleService ? firstChecked.id : ""),
+      service_name: forceAll ? "all services" : (isSingleService ? firstChecked.name : "scheduled services"),
+      requested_by: String(opts.requested_by || "system").trim() || "system"
+    });
+    probeRequested = true;
+  }
+
+  return {
+    ok: true,
+    now: now,
+    checked_services: checkedServices,
+    checked_count: checkedServices.length,
+    online_probe_count: onlineProbes.length,
+    probe_requested: probeRequested
+  };
+}
+
 function runScheduler() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return;
 
   try {
-    const now = new Date();
-    const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
-    ensureHeaders_(sh, SERVICE_HEADERS);
-    applyRecommendedServiceSettingsIfNeeded_();
-    const values = sh.getDataRange().getValues();
-    if (values.length < 2) {
-      maybeSendScheduledReport_(now);
-      return;
-    }
-
-    const idx = indexMap_(values[0]);
-    for (let r = 1; r < values.length; r++) {
-      const row = values[r];
-      if (!toBool_(row[idx.enabled])) continue;
-
-      const nextCheck = row[idx.next_check_at] ? new Date(row[idx.next_check_at]) : new Date(0);
-      if (nextCheck.getTime() > now.getTime()) continue;
-
-      const id = row[idx.id];
-      const intervalMin = Math.max(1, toNum_(row[idx.interval_min], 5));
-      const service = objFromRow_(values[0], row);
-      const result = checkUrl_(service);
-      appendCheckLog_(id, result);
-
-      const next = new Date(now.getTime() + intervalMin * 60000);
-      sh.getRange(r + 1, idx.last_check_at + 1).setValue(now);
-      sh.getRange(r + 1, idx.last_status + 1).setValue(result.status);
-      sh.getRange(r + 1, idx.last_http_code + 1).setValue(result.httpCode);
-      if (idx.last_error_type !== undefined) sh.getRange(r + 1, idx.last_error_type + 1).setValue(result.errorType || "");
-      if (idx.last_error !== undefined) {
-        sh.getRange(r + 1, idx.last_error + 1).setValue(result.error || "");
-      }
-      if (idx.last_final_url !== undefined) sh.getRange(r + 1, idx.last_final_url + 1).setValue(result.finalUrl || "");
-      if (idx.consecutive_failures !== undefined) sh.getRange(r + 1, idx.consecutive_failures + 1).setValue(result.failStreak || 0);
-      sh.getRange(r + 1, idx.last_latency_ms + 1).setValue(result.latencyMs);
-      sh.getRange(r + 1, idx.next_check_at + 1).setValue(next);
-      sh.getRange(r + 1, idx.updated_at + 1).setValue(now);
-    }
-
-    invalidateServicesCache_();
-    maybeSendScheduledReport_(now);
+    var summary = runServiceChecks_({
+      force_all: false,
+      request_probe: true,
+      requested_by: "scheduler"
+    });
+    maybeSendScheduledReport_(summary.now || new Date());
+    return summary;
   } finally {
     lock.releaseLock();
   }
@@ -872,6 +926,82 @@ function deleteService_(id) {
   return updateService_({ id: id, enabled: false });
 }
 
+function runNow_(payload) {
+  var summary = runServiceChecks_({
+    force_all: true,
+    request_probe: payload && payload.request_probe,
+    requested_by: String((payload && payload.requested_by) || "admin").trim() || "admin"
+  });
+
+  return {
+    ok: true,
+    data: {
+      checked_count: Number(summary.checked_count || 0),
+      probe_requested: !!summary.probe_requested,
+      online_probe_count: Number(summary.online_probe_count || 0)
+    }
+  };
+}
+
+function refreshServiceNow_(payload) {
+  var id = String((payload && payload.id) || "").trim();
+  if (!id) return { ok: false, error: "Missing id" };
+
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+  if (!sh) return { ok: false, error: "Services sheet not found" };
+  ensureHeaders_(sh, SERVICE_HEADERS);
+  var values = sh.getDataRange().getValues();
+  if (values.length < 2) return { ok: false, error: "No services found" };
+  var idx = indexMap_(values[0]);
+  var now = new Date();
+
+  for (var r = 1; r < values.length; r++) {
+    if (String(values[r][idx.id] || "").trim() !== id) continue;
+    var service = objFromRow_(values[0], values[r]);
+    var intervalMin = Math.max(1, toNum_(service.interval_min, 5));
+    var result = checkUrl_(service);
+    appendCheckLog_(id, result);
+
+    sh.getRange(r + 1, idx.last_check_at + 1).setValue(now);
+    sh.getRange(r + 1, idx.last_status + 1).setValue(result.status);
+    sh.getRange(r + 1, idx.last_http_code + 1).setValue(result.httpCode);
+    if (idx.last_error_type !== undefined) sh.getRange(r + 1, idx.last_error_type + 1).setValue(result.errorType || "");
+    if (idx.last_error !== undefined) sh.getRange(r + 1, idx.last_error + 1).setValue(result.error || "");
+    if (idx.last_final_url !== undefined) sh.getRange(r + 1, idx.last_final_url + 1).setValue(result.finalUrl || "");
+    if (idx.consecutive_failures !== undefined) sh.getRange(r + 1, idx.consecutive_failures + 1).setValue(result.failStreak || 0);
+    if (idx.last_latency_ms !== undefined) sh.getRange(r + 1, idx.last_latency_ms + 1).setValue(result.latencyMs);
+    if (idx.next_check_at !== undefined && toBool_(service.enabled)) {
+      sh.getRange(r + 1, idx.next_check_at + 1).setValue(new Date(now.getTime() + intervalMin * 60000));
+    }
+    if (idx.updated_at !== undefined) sh.getRange(r + 1, idx.updated_at + 1).setValue(now);
+
+    invalidateServicesCache_();
+
+    var onlineProbes = getOnlineProbes_(Date.now());
+    var probeRequested = false;
+    if (onlineProbes.length && toBool_(payload && payload.request_probe !== undefined ? payload.request_probe : true)) {
+      requestProbeRunSignal_({
+        service_id: id,
+        service_name: service.name || service.url || id,
+        requested_by: String((payload && payload.requested_by) || "admin").trim() || "admin"
+      });
+      probeRequested = true;
+    }
+
+    return {
+      ok: true,
+      data: {
+        id: id,
+        gas_result: result,
+        probe_requested: probeRequested,
+        online_probe_count: onlineProbes.length
+      }
+    };
+  }
+
+  return { ok: false, error: "Service not found" };
+}
+
 function hardDeleteService_(id) {
   if (!id) return { ok: false, error: "Missing id" };
   var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
@@ -1031,8 +1161,8 @@ function buildAggregatedServiceView_(service, probeCheck, onlineProbes, nowMs) {
   }
 
   if (gasUnstable || probeUnstable) {
-    view.last_status = "UNSTABLE";
-    view.last_error_type = "UNSTABLE";
+    view.last_status = "UP-";
+    view.last_error_type = "DUAL_PARTIAL";
     view.last_error = joinStatusText_([
       formatStatusSource_("GAS", gasStatus, gasErrorType || gasError),
       formatStatusSource_(probeName || probeId || "Probe", probeStatus, probeErrorType || probeError)
@@ -1041,8 +1171,8 @@ function buildAggregatedServiceView_(service, probeCheck, onlineProbes, nowMs) {
   }
 
   if (gasSlow || probeSlow) {
-    view.last_status = "SLOW";
-    view.last_error_type = "SLOW";
+    view.last_status = "UP-";
+    view.last_error_type = "DUAL_PARTIAL";
     view.last_error = joinStatusText_([
       gasSlow ? formatStatusSource_("GAS", gasStatus, gasError) : "",
       probeSlow ? formatStatusSource_(probeName || probeId || "Probe", probeStatus, probeError) : ""
@@ -1304,6 +1434,28 @@ function clearProbeState_(payload) {
       last_status_summary: ""
     };
   });
+}
+
+function requestProbeRunSignal_(payload) {
+  var props = PropertiesService.getScriptProperties();
+  var signal = {
+    requested_at: new Date().toISOString(),
+    service_id: String((payload && payload.service_id) || "").trim(),
+    service_name: String((payload && payload.service_name) || "").trim(),
+    requested_by: String((payload && payload.requested_by) || "system").trim() || "system"
+  };
+  props.setProperty(PROP_PROBE_RUN_SIGNAL, JSON.stringify(signal));
+  return signal;
+}
+
+function getProbeRunSignal_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(PROP_PROBE_RUN_SIGNAL);
+  if (!raw) return { ok: true, data: null };
+  try {
+    return { ok: true, data: JSON.parse(raw) };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
 }
 
 /**
@@ -2012,7 +2164,7 @@ function sendStatusReportLegacy_(cfg, forceSend, now) {
   const eventTime = now || new Date();
 
   const services = (listServices_().data || []).filter((s) => toBool_(s.enabled));
-  const issues = services.filter((s) => String(s.last_status || "").toUpperCase() !== "UP");
+  const issues = services.filter((s) => !isUpEquivalentStatus_(s.last_status));
   const upCount = services.length - issues.length;
 
   if (!forceSend && cfg.only_on_issue && issues.length === 0) {
@@ -2066,7 +2218,7 @@ function sendStatusReportLegacy_(cfg, forceSend, now) {
 
   const allRowsHtml = services.length
     ? services.map((s) => {
-        const isIssue = String(s.last_status || "").toUpperCase() !== "UP";
+        const isIssue = !isUpEquivalentStatus_(s.last_status);
         const portData  = portMap[String(s.name)];
         const openPorts = portData ? portData.open_ports : null;
         const portsCell = openPorts && openPorts.length
@@ -2131,7 +2283,7 @@ function sendStatusReportLegacy_(cfg, forceSend, now) {
     const code = String(s.last_http_code || "-");
     const latency = String(s.last_latency_ms || "-");
     const t = String(s.last_check_at || "-");
-    const isIssue = st.toUpperCase() !== "UP" ? "YES" : "NO";
+    const isIssue = isUpEquivalentStatus_(st) ? "NO" : "YES";
     const portData  = portMap[String(s.name)];
     const openPorts = portData ? portData.open_ports : null;
     const portStr   = openPorts && openPorts.length ? openPorts.join(", ") : "—";
@@ -2222,6 +2374,11 @@ function isConfirmedDownStatus_(status) {
   return value === "DOWN";
 }
 
+function isUpEquivalentStatus_(status) {
+  var value = normalizeServiceStatus_(status);
+  return value === "UP" || value === "UP-";
+}
+
 function sendStatusReport_(cfg, forceSend, now) {
   const sendMail = cfg.notify_mode !== "line_only";
   const recipients = parseRecipients_(cfg.recipients);
@@ -2288,7 +2445,7 @@ function sendStatusReport_(cfg, forceSend, now) {
 
   const allRowsHtml = services.length
     ? services.map(function (item) {
-        const isIssue = String(item.last_status || "").toUpperCase() !== "UP";
+        const isIssue = !isUpEquivalentStatus_(item.last_status);
         const portData = portMap[String(item.name)];
         const openPorts = portData ? portData.open_ports : null;
         const portsCell = openPorts && openPorts.length
@@ -2357,7 +2514,7 @@ function sendStatusReport_(cfg, forceSend, now) {
     const portData = portMap[String(item.name)];
     const openPorts = portData ? portData.open_ports : null;
     const portStr = openPorts && openPorts.length ? openPorts.join(", ") : "-";
-    const isIssue = st.toUpperCase() !== "UP" ? "YES" : "NO";
+    const isIssue = isUpEquivalentStatus_(st) ? "NO" : "YES";
     return `- ${item.name} | ${st} | HTTP ${code} | ${latency} ms | Ports: ${portStr} | ${checkedAt} | ISSUE: ${isIssue}`;
   });
 

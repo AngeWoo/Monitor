@@ -15,7 +15,8 @@ function parseCliArgs(argv) {
     configPath: "",
     controlMode: false,
     runOnceMode: false,
-    noResultWindow: false
+    noResultWindow: false,
+    serviceId: ""
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -35,6 +36,11 @@ function parseCliArgs(argv) {
     }
     if (arg === "--config" && argv[i + 1]) {
       parsed.configPath = path.resolve(String(argv[i + 1]));
+      i += 1;
+      continue;
+    }
+    if (arg === "--service-id" && argv[i + 1]) {
+      parsed.serviceId = String(argv[i + 1] || "").trim();
       i += 1;
       continue;
     }
@@ -132,6 +138,7 @@ function loadRuntimeConfig() {
     showResultWindowOnErrorOnly,
     showControlWindow,
     controlWindowIntervalSec,
+    forceServiceId: String(process.env.MONITOR_FORCE_SERVICE_ID || cli.serviceId || "").trim(),
     appVersion: String(process.env.MONITOR_APP_VERSION || fileConfig.app_version || "").trim(),
     metadata: {
       probe_id: probeId,
@@ -871,7 +878,15 @@ async function runProbeOnce() {
     throw new Error(listResponse.error || "listServices failed");
   }
 
-  const services = (listResponse.data || []).filter((item) => toBool(item.enabled));
+  const allServices = listResponse.data || [];
+  let services = allServices.filter((item) => toBool(item.enabled));
+  if (RUNTIME.forceServiceId) {
+    const matched = allServices.find((item) => String(item.id || "").trim() === RUNTIME.forceServiceId);
+    if (!matched) {
+      throw new Error(`Service not found for forced probe: ${RUNTIME.forceServiceId}`);
+    }
+    services = [matched];
+  }
   const results = [];
 
   for (const service of services) {
