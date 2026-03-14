@@ -1,0 +1,11 @@
+{
+  "api_base": "https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec",
+  "probe_id": "local-KNIGHT",
+  "probe_name": "Local Probe KNIGHT",
+  "request_timeout_ms": 15000,
+  "app_version": "1.0.0",
+  "show_result_window": true,
+  "show_result_window_on_error_only": true,
+  "show_control_window": false,
+  "control_window_interval_sec": 60
+}
