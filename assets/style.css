@@ -1757,3 +1757,279 @@ label {
     word-break: break-all;
   }
 }
+
+/* ---- Responsive refinement: tablet + mobile ---- */
+@media (max-width: 1180px) {
+  .topbar,
+  .container {
+    width: min(100vw - 28px, 1180px);
+  }
+
+  th,
+  td {
+    padding: 10px 8px;
+    font-size: 0.94rem;
+  }
+
+  .url-ellipsis {
+    max-width: 250px;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .charts-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .report-grid.report-grid-compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .report-col-monitor,
+  .report-col-recipients,
+  .report-col-mode,
+  .report-col-frequency,
+  .report-col-daily-hour,
+  .report-col-options,
+  .report-col-line-token,
+  .report-col-line-to,
+  .report-col-submit,
+  .report-inline-note {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .report-col-line-token,
+  .report-col-line-to,
+  .report-inline-note {
+    grid-column: 1 / -1;
+  }
+
+  .service-add-grid,
+  .service-defaults-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .latency-filters {
+    justify-content: flex-start;
+  }
+
+  .test-data-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .test-data-grid .btn {
+    grid-column: 1 / -1;
+  }
+
+  .report-col-submit {
+    grid-column: 1 / -1;
+  }
+
+  .report-actions {
+    justify-content: flex-end;
+  }
+
+  .report-save-btn {
+    width: min(320px, 100%);
+    margin-left: auto;
+  }
+
+  .service-card-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+
+  .service-card-actions .btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 860px) {
+  .topbar,
+  .container {
+    width: calc(100vw - 20px);
+  }
+
+  .topbar {
+    margin: 16px auto 10px;
+    padding: 14px 16px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  nav {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  nav a {
+    flex: 1 1 calc(33.333% - 6px);
+    text-align: center;
+  }
+
+  .container {
+    margin-bottom: 32px;
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  .panel-header,
+  .history-footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .panel-header .row-actions,
+  .history-footer .row-actions {
+    width: 100%;
+  }
+
+  .row-actions {
+    flex-wrap: wrap;
+  }
+
+  .row-actions .btn:not(.tiny),
+  .row-actions .select,
+  .row-actions input:not([type="checkbox"]) {
+    flex: 1 1 180px;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .report-grid.report-grid-compact {
+    grid-template-columns: 1fr;
+  }
+
+  .report-col-monitor,
+  .report-col-recipients,
+  .report-col-mode,
+  .report-col-frequency,
+  .report-col-daily-hour,
+  .report-col-options,
+  .report-col-line-token,
+  .report-col-line-to,
+  .report-col-submit,
+  .report-inline-note {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .check-row {
+    flex-wrap: wrap;
+    min-height: 0;
+  }
+
+  .service-card-grid,
+  .service-main-grid,
+  .service-result-strip,
+  .service-card-grid-compact,
+  .service-result-grid,
+  .service-add-grid,
+  .service-defaults-grid,
+  .probe-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .probe-compact-grid-six {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .service-card-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .latency-filters input[type="datetime-local"] {
+    width: auto;
+    flex: 1 1 220px;
+  }
+
+  .all-availability-badge {
+    white-space: normal;
+  }
+}
+
+@media (max-width: 620px) {
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .summary-grid .metric {
+    padding: 12px 10px;
+    border-radius: 12px;
+  }
+
+  .summary-grid .metric p {
+    font-size: 0.74rem;
+    margin-bottom: 4px;
+  }
+
+  .summary-grid .metric strong {
+    font-size: 1.08rem;
+  }
+
+  .summary-grid .metric-range-value {
+    font-size: 0.78rem;
+  }
+
+  nav a {
+    flex: 1 1 calc(33.333% - 6px);
+    font-size: 0.84rem;
+  }
+
+  .row-actions .btn,
+  .row-actions .select,
+  .row-actions input:not([type="checkbox"]) {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .service-card-grid,
+  .service-main-grid,
+  .service-result-strip,
+  .service-card-grid-compact,
+  .service-result-grid,
+  .service-add-grid,
+  .service-defaults-grid,
+  .probe-card-grid,
+  .probe-compact-grid-six {
+    grid-template-columns: 1fr;
+  }
+
+  .probe-card-side-actions,
+  .probe-card-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .probe-card-actions .btn {
+    flex: 1 1 100%;
+  }
+
+  .service-card-actions {
+    grid-template-columns: 1fr;
+  }
+
+  table tbody td::before {
+    width: 84px;
+    min-width: 84px;
+  }
+
+  .history-footer {
+    align-items: stretch;
+  }
+
+  .history-footer .hint {
+    width: 100%;
+  }
+}

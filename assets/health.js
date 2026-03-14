@@ -16,6 +16,7 @@ const notifyLogPageInfo = document.getElementById('notifyLogPageInfo');
 const notifyLogPrevBtn = document.getElementById('notifyLogPrevBtn');
 const notifyLogNextBtn = document.getElementById('notifyLogNextBtn');
 const notifyLogRefreshBtn = document.getElementById('notifyLogRefreshBtn');
+const notifyLogClearBtn = document.getElementById('notifyLogClearBtn');
 const notifyLogTabButtons = Array.from(document.querySelectorAll('[data-log-channel]'));
 
 const CLICK_LOADING_MIN_MS = 380;
@@ -232,6 +233,7 @@ function updateNotifyLogPager() {
   }
   if (notifyLogPrevBtn) notifyLogPrevBtn.disabled = notifyLogPage <= 1;
   if (notifyLogNextBtn) notifyLogNextBtn.disabled = !totalPages || notifyLogPage >= totalPages;
+  if (notifyLogClearBtn) notifyLogClearBtn.disabled = notifyLogTotalRows <= 0;
 }
 
 function renderNotificationLogs(rows) {
@@ -290,6 +292,37 @@ async function loadNotificationLogs(options = {}) {
     if (notifyLogMessage) {
       notifyLogMessage.textContent = `通知紀錄讀取失敗: ${safeText(err.message)}`;
     }
+  }
+}
+
+async function clearNotificationLogs() {
+  if (!window.confirm('確定要清除全部通知發送紀錄嗎？此動作無法復原。')) return;
+
+  if (notifyLogClearBtn) notifyLogClearBtn.disabled = true;
+  if (notifyLogMessage) notifyLogMessage.textContent = '正在清除通知發送紀錄...';
+
+  try {
+    const res = await apiPost({ action: 'clearNotificationLogs' });
+    if (!res.ok) throw new Error(res.error || 'clearNotificationLogs failed');
+
+    notifyLogPage = 1;
+    notifyLogTotalPages = 0;
+    notifyLogTotalRows = 0;
+    renderNotificationLogs([]);
+    await loadNotificationLogs({ showMessage: false });
+
+    if (notifyLogMessage) {
+      notifyLogMessage.textContent = `已清除 ${toNum(res.deleted_count, 0)} 筆通知發送紀錄`;
+    }
+  } catch (err) {
+    const rawMessage = safeText(err.message);
+    const friendlyMessage = /Unknown action/i.test(rawMessage)
+      ? '線上 GAS Web App 尚未更新到清除紀錄版本，請重新部署後再試'
+      : `清除通知發送紀錄失敗: ${rawMessage}`;
+    if (notifyLogMessage) {
+      notifyLogMessage.textContent = friendlyMessage;
+    }
+    updateNotifyLogPager();
   }
 }
 
@@ -423,6 +456,12 @@ function bindNotifyLogEvents() {
   if (notifyLogRefreshBtn) {
     notifyLogRefreshBtn.addEventListener('click', async () => {
       await loadNotificationLogs();
+    });
+  }
+
+  if (notifyLogClearBtn) {
+    notifyLogClearBtn.addEventListener('click', async () => {
+      await clearNotificationLogs();
     });
   }
 }
