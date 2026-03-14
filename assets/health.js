@@ -1,4 +1,4 @@
-import { apiGet, apiPost, fmtDate, safeText, statusBadge, loadHostBadge } from './common.js?v=20260314-a006';
+import { apiGet, apiPost, fmtDate, safeText, statusBadge, loadHostBadge, serviceCheckModeBadge, serviceCheckModeDetail } from './common.js?v=20260314-a016';
 
 const summaryEl = document.getElementById('healthSummary');
 const staleBody = document.getElementById('staleBody');
@@ -155,6 +155,20 @@ function renderStaleRows(rows) {
       <td data-label="原因">${safeText(getHealthReason(service, check))}</td>
     </tr>
   `).join('');
+}
+
+function decorateHealthCheckModes(rows) {
+  const renderedRows = Array.from(staleBody.querySelectorAll('tr'));
+  renderedRows.forEach((rowEl, index) => {
+    const item = rows[index];
+    if (!item || !item.service) return;
+    const firstCell = rowEl.querySelector('td');
+    if (!firstCell || firstCell.querySelector('.service-check-mode-line')) return;
+    const label = document.createElement('div');
+    label.className = 'service-check-mode-line';
+    label.innerHTML = `${serviceCheckModeBadge(item.service)}<span class="service-check-mode-detail">${safeText(serviceCheckModeDetail(item.service))}</span>`;
+    firstCell.appendChild(label);
+  });
 }
 
 function getHealthReason(service, check) {
@@ -325,6 +339,7 @@ async function loadHealth(onProgress) {
     });
 
     renderStaleRows(staleList);
+    decorateHealthCheckModes(staleList);
     if (typeof onProgress === 'function') onProgress(80);
     await loadNotificationLogs({ showMessage: false });
 

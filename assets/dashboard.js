@@ -1,4 +1,4 @@
-import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge, loadHostBadge } from './common.js?v=20260314-a006';
+import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge, loadHostBadge, serviceCheckModeBadge, serviceCheckModeDetail } from './common.js?v=20260314-a016';
 
 const summaryEl = document.getElementById('summary');
 const tbody = document.getElementById('servicesBody');
@@ -331,6 +331,7 @@ function renderTable() {
           <a class="url-ellipsis" href="${safeText(s.url)}" target="_blank" rel="noreferrer" title="${safeText(s.url)}">
             ${safeText(s.url)}
           </a>
+          <div class="service-check-mode-line">${serviceCheckModeBadge(s)}<span class="service-check-mode-detail">${safeText(serviceCheckModeDetail(s))}</span></div>
         </td>
         <td data-label="狀態">${statusBadge(s.last_status)}</td>
         <td data-label="HTTP">${safeText(s.last_http_code) || '-'}</td>

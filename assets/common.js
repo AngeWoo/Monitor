@@ -128,6 +128,21 @@ export function statusBadge(status) {
   return '<span class="badge unknown">UNKNOWN</span>';
 }
 
+export function serviceCheckModeBadge(service) {
+  const mode = String((service && service.check_mode) || "").toLowerCase();
+  const label = safeText((service && service.check_mode_label) || "").trim() || "單一測試";
+  const cls = mode === "dual"
+    ? "check-mode-badge dual"
+    : mode === "dual_pending"
+      ? "check-mode-badge pending"
+      : "check-mode-badge single";
+  return `<span class="${cls}">${label}</span>`;
+}
+
+export function serviceCheckModeDetail(service) {
+  return safeText((service && service.check_mode_detail) || "").trim() || "僅使用 GAS 檢測";
+}
+
 // ---- Host Badge ----
 export function loadHostBadge() {
   const badge = document.getElementById('hostBadge');

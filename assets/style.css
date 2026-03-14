@@ -711,6 +711,51 @@ label {
   word-break: break-all;
 }
 
+.service-check-mode-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.service-check-mode-detail {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.check-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.check-mode-badge.single {
+  background: rgba(26, 156, 137, 0.12);
+  color: var(--primary);
+}
+
+.check-mode-badge.dual {
+  background: rgba(40, 89, 168, 0.12);
+  color: #2a57a8;
+}
+
+.check-mode-badge.pending {
+  background: rgba(179, 129, 0, 0.14);
+  color: #8b6500;
+}
+
+.table-service-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
 .service-card-side {
   display: grid;
   gap: 4px;
@@ -967,6 +1012,182 @@ label {
   color: var(--muted);
 }
 
+.probe-admin-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.probe-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(160deg, #fffdf7, #f7fbff);
+  box-shadow: 0 8px 20px rgba(50, 64, 91, 0.08);
+  padding: 12px 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.probe-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.probe-card-subtitle {
+  margin-top: 4px;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.probe-status-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.probe-online {
+  background: rgba(23, 125, 63, 0.12);
+  color: var(--up);
+}
+
+.probe-offline {
+  background: rgba(190, 45, 45, 0.12);
+  color: var(--danger);
+}
+
+.probe-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.probe-card-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #f7fafc;
+  border: 1px solid #e6edf4;
+}
+
+.probe-card-grid span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.probe-card-grid strong {
+  font-size: 0.92rem;
+}
+
+.probe-wide {
+  grid-column: 1 / -1;
+}
+
+.probe-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.probe-card-compact {
+  border-radius: 12px;
+  padding: 10px 12px;
+  gap: 8px;
+}
+
+.probe-card-compact .probe-card-header {
+  gap: 8px;
+}
+
+.probe-card-compact .probe-card-header strong {
+  display: block;
+  line-height: 1.2;
+}
+
+.probe-card-compact .probe-card-subtitle {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.probe-card-compact .probe-status-badge {
+  padding: 4px 9px;
+  font-size: 0.78rem;
+}
+
+.probe-compact-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 6px;
+}
+
+.probe-compact-kpi,
+.probe-compact-line {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #e6edf4;
+  border-radius: 10px;
+}
+
+.probe-compact-kpi {
+  padding: 6px 8px;
+  background: #f7fafc;
+}
+
+.probe-compact-line {
+  padding: 7px 9px;
+  background: #ffffff;
+}
+
+.probe-compact-kpi span,
+.probe-compact-line span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.probe-compact-kpi strong,
+.probe-compact-line strong {
+  font-size: 0.88rem;
+  line-height: 1.3;
+}
+
+.probe-compact-lines {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.probe-compact-line-wide {
+  grid-column: 1 / -1;
+}
+
+.probe-compact-error {
+  border-color: rgba(190, 45, 45, 0.18);
+  background: #fff8f8;
+}
+
+.probe-card-compact .probe-card-actions {
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.probe-card-compact .log-cell-wrap {
+  max-width: none;
+}
+
+@media (max-width: 720px) {
+  .probe-compact-lines {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ---- Scroll FAB (floating scroll buttons) ---- */
 .fab-wrap {
   position: fixed;
@@ -1029,6 +1250,7 @@ label {
   .service-main-grid,
   .service-result-strip,
   .service-card-grid-compact,
+  .probe-card-grid,
   .service-result-grid,
   .service-add-grid,
   .service-defaults-grid {
@@ -1094,7 +1316,8 @@ label {
 
   .service-main-grid,
   .service-result-strip,
-  .service-card-grid-compact {
+  .service-card-grid-compact,
+  .probe-card-grid {
     grid-template-columns: 1fr;
   }
 }

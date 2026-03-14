@@ -1,4 +1,4 @@
-import { apiGet, apiPost, safeText, loadHostBadge } from './common.js?v=20260314-a006';
+import { apiGet, apiPost, safeText, loadHostBadge, fmtDate, serviceCheckModeBadge, serviceCheckModeDetail } from './common.js?v=20260314-a016';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
@@ -6,6 +6,9 @@ const adminBody = document.getElementById('adminServicesBody');
 const adminMessage = document.getElementById('adminMessage');
 const reloadBtn = document.getElementById('reloadBtn');
 const runNowBtn = document.getElementById('runNowBtn');
+const probesBody = document.getElementById('adminProbesBody');
+const probesMessage = document.getElementById('probesMessage');
+const reloadProbesBtn = document.getElementById('reloadProbesBtn');
 const reportForm = document.getElementById('reportForm');
 const reportMessage = document.getElementById('reportMessage');
 const reloadReportBtn = document.getElementById('reloadReportBtn');
@@ -30,9 +33,11 @@ const DATES_CACHE_KEY = 'monitor_checks_dates_v1';
 const DATES_CACHE_TTL_MS = 5 * 60 * 1000;
 
 let services = [];
+let probes = [];
 let firstLoadPending = true;
 let deleteProgressTimer = null;
 let deleteProgressValue = 0;
+const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
 
 function serviceDefaults() {
   return {
@@ -171,6 +176,102 @@ function normalizeService(service) {
   return { ...serviceDefaults(), ...service };
 }
 
+function probeOnlineState(probe) {
+  const lastSeen = probe && probe.last_seen_at ? new Date(probe.last_seen_at) : null;
+  if (!lastSeen || Number.isNaN(lastSeen.getTime())) return { online: false, label: '離線' };
+  return (Date.now() - lastSeen.getTime()) <= PROBE_ONLINE_WINDOW_MS
+    ? { online: true, label: '在線' }
+    : { online: false, label: '離線' };
+}
+
+function probeTemplate(probe) {
+  const state = probeOnlineStateDisplay(probe);
+  const statusClass = state.online ? 'probe-online' : 'probe-offline';
+  return `
+    <article class="probe-card">
+      <div class="probe-card-header">
+        <div>
+          <strong>${safeText(probe.probe_name) || safeText(probe.probe_id) || '(未命名 Probe)'}</strong>
+          <div class="probe-card-subtitle">${safeText(probe.host_name) || '-'} | ${safeText(probe.platform) || '-'} ${safeText(probe.platform_release) || ''}</div>
+        </div>
+        <span class="probe-status-badge ${statusClass}">${state.label}</span>
+      </div>
+      <div class="probe-card-grid">
+        <div><span>Probe ID</span><strong>${safeText(probe.probe_id) || '-'}</strong></div>
+        <div><span>最後心跳</span><strong>${fmtDate(probe.last_seen_at)}</strong></div>
+        <div><span>最後執行</span><strong>${fmtDate(probe.last_run_finished_at || probe.last_run_started_at)}</strong></div>
+        <div><span>最後狀態</span><strong>${safeText(probe.last_run_status) || '-'}</strong></div>
+        <div><span>結果數</span><strong>${safeText(probe.last_result_count) || '0'}</strong></div>
+        <div><span>DOWN 數</span><strong>${safeText(probe.last_down_count) || '0'}</strong></div>
+        <div class="probe-wide"><span>版本</span><strong>${safeText(probe.probe_version) || '-'}${probe.app_version ? ` / App ${safeText(probe.app_version)}` : ''}</strong></div>
+        <div class="probe-wide"><span>最近摘要</span><strong class="log-cell-wrap">${safeText(probe.last_status_summary) || '-'}</strong></div>
+        <div class="probe-wide"><span>最近錯誤</span><strong class="log-cell-wrap">${safeText(probe.last_run_error) || '-'}</strong></div>
+      </div>
+      <div class="probe-card-actions">
+        <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${safeText(probe.probe_id)}">立即標記離線</button>
+        <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${safeText(probe.probe_id)}">清理 Probe 狀態</button>
+      </div>
+    </article>
+  `;
+}
+
+function probeOnlineStateDisplay(probe) {
+  const runStatus = String((probe && probe.last_run_status) || '').toUpperCase();
+  if (runStatus === 'OFFLINE' || runStatus === 'STOPPED' || runStatus === 'CLOSED') {
+    return { online: false, label: '離線' };
+  }
+  const base = probeOnlineState(probe);
+  return {
+    online: !!base.online,
+    label: base.online ? '在線' : '離線'
+  };
+}
+
+function probeCompactTemplate(probe) {
+  const state = probeOnlineStateDisplay(probe);
+  const statusClass = state.online ? 'probe-online' : 'probe-offline';
+  const summaryText = safeText(probe.last_status_summary) || '-';
+  const errorText = safeText(probe.last_run_error) || '';
+  const versionText = safeText(probe.probe_version) || '-';
+  const appVersionText = probe.app_version ? ` / App ${safeText(probe.app_version)}` : '';
+  return `
+    <article class="probe-card probe-card-compact">
+      <div class="probe-card-header">
+        <div>
+          <strong>${safeText(probe.probe_name) || safeText(probe.probe_id) || '(Probe)'}</strong>
+          <div class="probe-card-subtitle">${safeText(probe.host_name) || '-'} | ${safeText(probe.platform) || '-'} ${safeText(probe.platform_release) || ''}</div>
+        </div>
+        <span class="probe-status-badge ${statusClass}">${state.label}</span>
+      </div>
+      <div class="probe-compact-kpis">
+        <div class="probe-compact-kpi"><span>Probe ID</span><strong>${safeText(probe.probe_id) || '-'}</strong></div>
+        <div class="probe-compact-kpi"><span>Status</span><strong>${safeText(probe.last_run_status) || '-'}</strong></div>
+        <div class="probe-compact-kpi"><span>Result / DOWN</span><strong>${safeText(probe.last_result_count) || '0'} / ${safeText(probe.last_down_count) || '0'}</strong></div>
+        <div class="probe-compact-kpi"><span>Last seen</span><strong>${fmtDate(probe.last_seen_at)}</strong></div>
+      </div>
+      <div class="probe-compact-lines">
+        <div class="probe-compact-line"><span>Last run</span><strong>${fmtDate(probe.last_run_finished_at || probe.last_run_started_at)}</strong></div>
+        <div class="probe-compact-line"><span>Version</span><strong>${versionText}${appVersionText}</strong></div>
+        <div class="probe-compact-line probe-compact-line-wide"><span>Summary</span><strong class="log-cell-wrap">${summaryText}</strong></div>
+        ${errorText && errorText !== '-' ? `<div class="probe-compact-line probe-compact-line-wide probe-compact-error"><span>Error</span><strong class="log-cell-wrap">${errorText}</strong></div>` : ''}
+      </div>
+      <div class="probe-card-actions">
+        <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${safeText(probe.probe_id)}">立即離線</button>
+        <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${safeText(probe.probe_id)}">清理狀態</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderProbes() {
+  if (!probesBody) return;
+  if (!probes.length) {
+    probesBody.innerHTML = '<div class="service-empty">目前沒有 Probe</div>';
+    return;
+  }
+  probesBody.innerHTML = probes.map(probeCompactTemplate).join('');
+}
+
 function rowTemplate(rawService) {
   const service = normalizeService(rawService);
   const enabled = isEnabled(service.enabled);
@@ -182,6 +283,7 @@ function rowTemplate(rawService) {
         <div class="service-card-title">
           <span class="name-cell">${statusDot(service.last_status)}<strong>${safeText(service.name) || '(未命名服務)'}</strong></span>
           <span class="service-card-url">${safeText(service.url) || '-'}</span>
+          <span class="service-check-mode-line">${serviceCheckModeBadge(service)}<span class="service-check-mode-detail">${safeText(serviceCheckModeDetail(service))}</span></span>
         </div>
         <div class="service-card-side">
           <span class="service-card-status">${safeText(service.last_status) || '-'}</span>
@@ -217,6 +319,7 @@ function rowTemplate(rawService) {
         </div>
 
         <div class="service-result-strip">
+          <div class="service-result-item"><span>測試模式</span><strong>${safeText(service.check_mode_label) || '單一測試'}</strong></div>
           <div class="service-result-item"><span>狀態</span><strong>${safeText(service.last_status) || '-'}</strong></div>
           <div class="service-result-item"><span>HTTP</span><strong>${safeText(service.last_http_code) || '-'}</strong></div>
           <div class="service-result-item"><span>Error Type</span><strong>${safeText(service.last_error_type) || '-'}</strong></div>
@@ -264,8 +367,8 @@ function rowTemplate(rawService) {
               <input data-field="expected_final_url" data-id="${safeText(service.id)}" value="${escapeAttr(service.expected_final_url)}" placeholder="留空表示不限制最終網址" />
             </label>
             <label class="span-2">
-              第二觀測網址
-              <input data-field="secondary_url" data-id="${safeText(service.id)}" value="${escapeAttr(service.secondary_url)}" placeholder="留空表示只用主網址觀測" />
+              備援/第二入口網址
+              <input data-field="secondary_url" data-id="${safeText(service.id)}" value="${escapeAttr(service.secondary_url)}" placeholder="留空表示只檢查主網址" />
             </label>
           </div>
         </details>
@@ -294,6 +397,15 @@ async function loadServices(onProgress) {
   services = (res.data || []).map(normalizeService);
   renderServices();
   adminMessage.textContent = '';
+  if (typeof onProgress === 'function') onProgress(100);
+}
+
+async function loadProbes(onProgress) {
+  if (probesMessage) probesMessage.textContent = '載入 Probe 中...';
+  const res = await apiGet({ action: 'listProbes' });
+  probes = Array.isArray(res.data) ? res.data : [];
+  renderProbes();
+  if (probesMessage) probesMessage.textContent = '';
   if (typeof onProgress === 'function') onProgress(100);
 }
 
@@ -411,6 +523,15 @@ async function handleReloadWithOverlay() {
   });
 }
 
+async function handleReloadProbes() {
+  await runTransientLoading('重新整理 Probe...', async (setP) => {
+    if (setP) setP(20);
+    await loadProbes((p) => {
+      if (setP) setP(20 + p * 0.8);
+    });
+  });
+}
+
 async function handleRunNowWithOverlay() {
   await runTransientLoading('執行健康檢查...', async (setP) => {
     if (setP) setP(20);
@@ -501,6 +622,45 @@ async function handleSendReportNow() {
   }
 }
 
+async function handleProbeAction(event) {
+  const btn = event.target.closest('button[data-probe-action]');
+  if (!btn) return;
+
+  const probeId = String(btn.dataset.probeId || '').trim();
+  const probeAction = String(btn.dataset.probeAction || '').trim();
+  if (!probeId || !probeAction) return;
+
+  try {
+    if (probesMessage) probesMessage.textContent = '處理 Probe 狀態中...';
+
+    if (probeAction === 'offline') {
+      const res = await apiPost({
+        action: 'markProbeOffline',
+        probe_id: probeId,
+        summary: 'Marked offline by admin'
+      });
+      if (!res.ok) throw new Error(res.error || 'markProbeOffline failed');
+      if (probesMessage) probesMessage.textContent = 'Probe 已標記離線';
+    } else if (probeAction === 'clear') {
+      const confirmed = window.confirm(`要清理 Probe 狀態嗎？\n${probeId}`);
+      if (!confirmed) {
+        if (probesMessage) probesMessage.textContent = '';
+        return;
+      }
+      const res = await apiPost({
+        action: 'clearProbeState',
+        probe_id: probeId
+      });
+      if (!res.ok) throw new Error(res.error || 'clearProbeState failed');
+      if (probesMessage) probesMessage.textContent = 'Probe 狀態已清理';
+    }
+
+    await loadProbes();
+  } catch (err) {
+    if (probesMessage) probesMessage.textContent = `Probe 操作失敗: ${safeText(err.message)}`;
+  }
+}
+
 async function loadChecksDates(forceRefresh) {
   if (!deleteTestDataDateSelect) return;
 
@@ -553,6 +713,8 @@ async function handleDeleteTestData(event) {
 
 if (reloadBtn) reloadBtn.addEventListener('click', handleReloadWithOverlay);
 if (runNowBtn) runNowBtn.addEventListener('click', handleRunNowWithOverlay);
+if (reloadProbesBtn) reloadProbesBtn.addEventListener('click', handleReloadProbes);
+if (probesBody) probesBody.addEventListener('click', handleProbeAction);
 if (addForm) addForm.addEventListener('submit', handleAdd);
 if (adminBody) adminBody.addEventListener('click', handleTableClick);
 if (reportForm) reportForm.addEventListener('submit', handleSaveReport);
@@ -566,8 +728,9 @@ async function initFirstLoad() {
   setLoadingProgress(8, '載入管理頁...');
   try {
     await Promise.all([
-      loadServices((p) => setLoadingProgress(8 + p * 0.62, '載入服務設定...')),
-      loadReportConfig((p) => setLoadingProgress(70 + p * 0.28, '載入通知設定...'))
+      loadServices((p) => setLoadingProgress(8 + p * 0.5, '載入服務設定...')),
+      loadProbes((p) => setLoadingProgress(58 + p * 0.16, '載入 Probe 管理...')),
+      loadReportConfig((p) => setLoadingProgress(74 + p * 0.26, '載入通知設定...'))
     ]);
     setLoadingProgress(100, '載入完成');
   } catch (err) {
