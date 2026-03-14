@@ -9,10 +9,29 @@
 const SHEET_SERVICES   = "services";
 const SHEET_CHECKS     = "checks";
 const SHEET_PORT_SCANS = "port_scans";
+const SHEET_NOTIFY_LOGS = "notify_logs";
 const API_KEY = "";
 
 const PORT_SCAN_HEADERS = [
   "device_name", "host", "open_ports", "scanned_at", "open_count", "total_count"
+];
+
+const NOTIFY_LOG_HEADERS = [
+  "timestamp",
+  "channel",
+  "trigger",
+  "status_label",
+  "sent",
+  "partial",
+  "skipped",
+  "issue_count",
+  "service_count",
+  "target_count",
+  "target_summary",
+  "subject",
+  "error",
+  "warning",
+  "details_json"
 ];
 
 const PROP_REPORT_CONFIG = "REPORT_CONFIG";
@@ -46,6 +65,10 @@ function initSheets() {
   let s3 = ss.getSheetByName(SHEET_PORT_SCANS);
   if (!s3) s3 = ss.insertSheet(SHEET_PORT_SCANS);
   ensureHeaders_(s3, PORT_SCAN_HEADERS);
+
+  let s4 = ss.getSheetByName(SHEET_NOTIFY_LOGS);
+  if (!s4) s4 = ss.insertSheet(SHEET_NOTIFY_LOGS);
+  ensureHeaders_(s4, NOTIFY_LOG_HEADERS);
 }
 
 function ensureHeaders_(sheet, requiredHeaders) {
@@ -146,6 +169,9 @@ function doGet(e) {
       case "getChecksDates":
         result = getChecksDates_();
         break;
+      case "getNotificationLogs":
+        result = getNotificationLogs_(p);
+        break;
       case "hardDeleteService":
         result = hardDeleteService_(p.id);
         break;
@@ -221,6 +247,9 @@ function doPost(e) {
         break;
       case "getChecksDates":
         result = getChecksDates_();
+        break;
+      case "getNotificationLogs":
+        result = getNotificationLogs_(body);
         break;
       case "hardDeleteService":
         result = hardDeleteService_(body.id);
@@ -752,6 +781,53 @@ function getChecksDates_() {
   return { ok: true, data: { dates: result.dates } };
 }
 
+function getNotificationLogs_(payload) {
+  const channel = String((payload && payload.channel) || "").trim().toLowerCase();
+  const requestedPageSize = toNum_(payload && payload.page_size, 30);
+  const pageSize = Math.max(1, Math.min(100, requestedPageSize || 30));
+  const requestedPage = toNum_(payload && payload.page, 1);
+
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_NOTIFY_LOGS);
+  if (!sh || sh.getLastRow() < 2) {
+    return {
+      ok: true,
+      data: [],
+      page: 1,
+      page_size: pageSize,
+      total: 0,
+      total_pages: 0,
+      channel: channel
+    };
+  }
+
+  const values = sh.getDataRange().getValues();
+  const header = values[0];
+  const rows = values.slice(1)
+    .map(function (row) { return objFromRow_(header, row); })
+    .filter(function (item) {
+      if (!channel) return true;
+      return String(item.channel || "").trim().toLowerCase() === channel;
+    })
+    .reverse();
+
+  const total = rows.length;
+  const totalPages = total > 0 ? Math.ceil(total / pageSize) : 0;
+  const page = totalPages > 0
+    ? Math.max(1, Math.min(requestedPage || 1, totalPages))
+    : 1;
+  const start = (page - 1) * pageSize;
+
+  return {
+    ok: true,
+    data: rows.slice(start, start + pageSize),
+    page: page,
+    page_size: pageSize,
+    total: total,
+    total_pages: totalPages,
+    channel: channel
+  };
+}
+
 /*************** Report Config ***************/
 function defaultReportConfig_() {
   return {
@@ -920,10 +996,76 @@ function fetchPortDevicesMap_() {
   }
 }
 
-function sendStatusReport_(cfg, forceSend, now) {
+function buildNotificationTargetInfo_(channelResult, meta) {
+  const result = channelResult || {};
+  const channel = String(result.channel || "").toLowerCase();
+
+  if (channel === "mail") {
+    const recipients = Array.isArray(meta && meta.recipients) ? meta.recipients : [];
+    return {
+      count: recipients.length,
+      summary: recipients.join(", ")
+    };
+  }
+
+  if (channel === "line") {
+    const results = Array.isArray(result.results) ? result.results : [];
+    const targets = results
+      .map(function (item) { return String((item && item.target) || "").trim(); })
+      .filter(function (item) { return item; });
+    const count = Number(result.target_count || targets.length || 0);
+    const preview = targets.slice(0, 3).join(", ");
+    return {
+      count: count,
+      summary: targets.length > 3 ? `${preview} ...` : preview
+    };
+  }
+
+  if (channel === "teams") {
+    return { count: 1, summary: "Teams webhook" };
+  }
+
+  return { count: 0, summary: "" };
+}
+
+function appendNotificationLogs_(meta, channels) {
+  if (!channels || !channels.length) return;
+
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(SHEET_NOTIFY_LOGS);
+  if (!sh) sh = ss.insertSheet(SHEET_NOTIFY_LOGS);
+  ensureHeaders_(sh, NOTIFY_LOG_HEADERS);
+
+  const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const rows = channels.map(function (channelResult) {
+    const targetInfo = buildNotificationTargetInfo_(channelResult, meta);
+    const detailsJson = safeJsonStringify_(channelResult);
+    return rowFromObj_(header, {
+      timestamp: meta && meta.now ? meta.now : new Date(),
+      channel: String((channelResult && channelResult.channel) || ""),
+      trigger: String((meta && meta.trigger) || ""),
+      status_label: String((meta && meta.statusLabel) || ""),
+      sent: !!(channelResult && channelResult.sent),
+      partial: !!(channelResult && channelResult.partial),
+      skipped: String((channelResult && channelResult.skipped) || ""),
+      issue_count: Number((meta && meta.issueCount) || 0),
+      service_count: Number((meta && meta.serviceCount) || 0),
+      target_count: Number(targetInfo.count || 0),
+      target_summary: String(targetInfo.summary || ""),
+      subject: String((meta && meta.subject) || ""),
+      error: String((channelResult && channelResult.error) || ""),
+      warning: String((meta && meta.warning) || ""),
+      details_json: truncateText_(detailsJson, 2000)
+    });
+  });
+
+  sh.getRange(sh.getLastRow() + 1, 1, rows.length, header.length).setValues(rows);
+}
+
+function sendStatusReportLegacy_(cfg, forceSend, now) {
   const sendMail = cfg.notify_mode !== "line_only";
   const recipients = parseRecipients_(cfg.recipients);
-  if (sendMail && !recipients.length) return { ok: false, error: "No recipients configured" };
+  const eventTime = now || new Date();
 
   const services = (listServices_().data || []).filter((s) => toBool_(s.enabled));
   const issues = services.filter((s) => String(s.last_status || "").toUpperCase() !== "UP");
@@ -934,10 +1076,35 @@ function sendStatusReport_(cfg, forceSend, now) {
   }
 
   const tz = Session.getScriptTimeZone();
-  const at = Utilities.formatDate(now, tz, "yyyy-MM-dd HH:mm:ss");
+  const at = Utilities.formatDate(eventTime, tz, "yyyy-MM-dd HH:mm:ss");
   const statusLabel = issues.length > 0 ? "ALERT" : "OK";
   const monitorLabel = getMonitorLabel_(cfg);
   const subject = `[Service Monitor][${statusLabel}][${monitorLabel}] ${at}`;
+  const logMeta = {
+    now: eventTime,
+    trigger: forceSend ? "manual" : "scheduled",
+    statusLabel: statusLabel,
+    issueCount: issues.length,
+    serviceCount: services.length,
+    subject: subject,
+    recipients: recipients,
+    warning: ""
+  };
+
+  if (sendMail && !recipients.length) {
+    const failedChannels = [{ channel: "mail", sent: false, error: "No recipients configured" }];
+    appendNotificationLogs_(logMeta, failedChannels);
+    return {
+      ok: false,
+      sent: false,
+      partial: false,
+      issues: issues.length,
+      channels: failedChannels,
+      error: "No recipients configured",
+      warning: ""
+    };
+  }
+
   const portMap = readPortScansMap_(); // { serviceName: { open_ports:[80,443], scanned_at, ... } }
   const latencyValues = services
     .map((s) => Number(s.last_latency_ms))
@@ -1057,11 +1224,11 @@ function sendStatusReport_(cfg, forceSend, now) {
 
   const channels = [];
   if (sendMail) {
-    let mailResult = { channel: "mail", sent: true };
+    let mailResult = { channel: "mail", sent: true, target_count: recipients.length };
     try {
       GmailApp.sendEmail(recipients.join(","), subject, plain, { htmlBody: htmlBody });
     } catch (err) {
-      mailResult = { channel: "mail", sent: false, error: String(err) };
+      mailResult = { channel: "mail", sent: false, target_count: recipients.length, error: String(err) };
     }
     channels.push(mailResult);
   }
@@ -1104,6 +1271,216 @@ function callNotifierSafe_(channel, fn) {
   } catch (err) {
     return { channel: channel, sent: false, error: String(err) };
   }
+}
+
+function sendStatusReport_(cfg, forceSend, now) {
+  const sendMail = cfg.notify_mode !== "line_only";
+  const recipients = parseRecipients_(cfg.recipients);
+  const eventTime = now || new Date();
+  const services = (listServices_().data || []).filter(function (item) { return toBool_(item.enabled); });
+  const issues = services.filter(function (item) {
+    return String(item.last_status || "").toUpperCase() !== "UP";
+  });
+  const upCount = services.length - issues.length;
+
+  if (!forceSend && cfg.only_on_issue && issues.length === 0) {
+    return { ok: true, sent: false, skipped: "No issue" };
+  }
+
+  const tz = Session.getScriptTimeZone();
+  const at = Utilities.formatDate(eventTime, tz, "yyyy-MM-dd HH:mm:ss");
+  const statusLabel = issues.length > 0 ? "ALERT" : "OK";
+  const monitorLabel = getMonitorLabel_(cfg);
+  const subject = `[Service Monitor][${statusLabel}][${monitorLabel}] ${at}`;
+  const logMeta = {
+    now: eventTime,
+    trigger: forceSend ? "manual" : "scheduled",
+    statusLabel: statusLabel,
+    issueCount: issues.length,
+    serviceCount: services.length,
+    subject: subject,
+    recipients: recipients,
+    warning: ""
+  };
+
+  if (sendMail && !recipients.length) {
+    const failedChannels = [{ channel: "mail", sent: false, error: "No recipients configured" }];
+    appendNotificationLogs_(logMeta, failedChannels);
+    return {
+      ok: false,
+      sent: false,
+      partial: false,
+      issues: issues.length,
+      channels: failedChannels,
+      error: "No recipients configured",
+      warning: ""
+    };
+  }
+
+  const portMap = readPortScansMap_();
+  const latencyValues = services
+    .map(function (item) { return Number(item.last_latency_ms); })
+    .filter(function (value) { return Number.isFinite(value) && value >= 0; });
+  const sortedLatency = latencyValues.slice().sort(function (a, b) { return a - b; });
+  const avgLatency = sortedLatency.length
+    ? Math.round(sortedLatency.reduce(function (sum, value) { return sum + value; }, 0) / sortedLatency.length)
+    : null;
+  const p95Latency = sortedLatency.length
+    ? sortedLatency[Math.min(sortedLatency.length - 1, Math.floor((sortedLatency.length - 1) * 0.95))]
+    : null;
+  const minLatency = sortedLatency.length ? sortedLatency[0] : null;
+  const maxLatency = sortedLatency.length ? sortedLatency[sortedLatency.length - 1] : null;
+  const availabilityRate = services.length ? ((upCount / services.length) * 100).toFixed(1) : "0.0";
+  const dashboardUrl = getDashboardUrl_();
+
+  const allRowsHtml = services.length
+    ? services.map(function (item) {
+        const isIssue = String(item.last_status || "").toUpperCase() !== "UP";
+        const portData = portMap[String(item.name)];
+        const openPorts = portData ? portData.open_ports : null;
+        const portsCell = openPorts && openPorts.length
+          ? `<span style="color:#0e7a6a;font-weight:600;">${openPorts.join(", ")}</span>`
+          : `<span style="color:#999;">-</span>`;
+        return `<tr>
+          <td>${escapeHtml_(item.name)}</td>
+          <td>${escapeHtml_(item.url)}</td>
+          <td>${escapeHtml_(String(item.last_status || "UNKNOWN"))}</td>
+          <td>${escapeHtml_(String(item.last_http_code || "-"))}</td>
+          <td>${escapeHtml_(String(item.last_latency_ms || "-"))}</td>
+          <td>${escapeHtml_(String(item.last_check_at || "-"))}</td>
+          <td>${portsCell}</td>
+          <td>${isIssue ? "YES" : "NO"}</td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="8">No enabled services</td></tr>`;
+
+  const statsHtml = `
+    <h3>Summary</h3>
+    <ul>
+      <li>Total services: ${services.length}</li>
+      <li>UP: ${upCount}</li>
+      <li>DOWN: ${issues.length}</li>
+      <li>Availability: ${availabilityRate}%</li>
+      <li>Average latency: ${avgLatency !== null ? avgLatency + " ms" : "N/A"}</li>
+      <li>P95 latency: ${p95Latency !== null ? p95Latency + " ms" : "N/A"}</li>
+      <li>Min latency: ${minLatency !== null ? minLatency + " ms" : "N/A"}</li>
+      <li>Max latency: ${maxLatency !== null ? maxLatency + " ms" : "N/A"}</li>
+    </ul>`;
+
+  const issueUrlsHtml = issues.length
+    ? `<hr><h3>Issue services</h3><ul style="margin:4px 0;padding-left:20px;">` +
+      issues.map(function (item) {
+        const name = escapeHtml_(item.name);
+        const url = escapeHtml_(item.url);
+        return `<li><strong>${name}</strong>: <a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></li>`;
+      }).join("") +
+      `</ul>`
+    : "";
+
+  const dashboardHtml = dashboardUrl
+    ? `<hr><p>Dashboard: <a href="${escapeHtml_(dashboardUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml_(dashboardUrl)}</a></p>`
+    : "";
+
+  const htmlBody = `
+    <h2>Service Monitor Status Report</h2>
+    <p><strong>Monitor:</strong> ${escapeHtml_(monitorLabel)}</p>
+    <p><strong>Checked at:</strong> ${escapeHtml_(at)}</p>
+    <p><strong>Services:</strong> ${services.length} / <strong>UP:</strong> ${upCount} / <strong>DOWN:</strong> ${issues.length}</p>
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+      <thead>
+        <tr><th>Name</th><th>URL</th><th>Status</th><th>HTTP</th><th>Latency(ms)</th><th>Last Check</th><th>Open Ports</th><th>Issue</th></tr>
+      </thead>
+      <tbody>${allRowsHtml}</tbody>
+    </table>
+    ${statsHtml}
+    ${issueUrlsHtml}
+    ${dashboardHtml}`;
+
+  const plainLines = services.map(function (item) {
+    const st = String(item.last_status || "UNKNOWN");
+    const code = String(item.last_http_code || "-");
+    const latency = String(item.last_latency_ms || "-");
+    const checkedAt = String(item.last_check_at || "-");
+    const portData = portMap[String(item.name)];
+    const openPorts = portData ? portData.open_ports : null;
+    const portStr = openPorts && openPorts.length ? openPorts.join(", ") : "-";
+    const isIssue = st.toUpperCase() !== "UP" ? "YES" : "NO";
+    return `- ${item.name} | ${st} | HTTP ${code} | ${latency} ms | Ports: ${portStr} | ${checkedAt} | ISSUE: ${isIssue}`;
+  });
+
+  let plain = [
+    "Service Monitor Status Report",
+    `Monitor: ${monitorLabel}`,
+    `Checked at: ${at}`,
+    `Services: ${services.length}`,
+    `UP: ${upCount}`,
+    `DOWN: ${issues.length}`,
+    "",
+    "Service List:",
+    plainLines.length ? plainLines.join("\n") : "(No enabled services)",
+    "",
+    "Summary:",
+    `Availability: ${availabilityRate}%`,
+    `Average latency: ${avgLatency !== null ? avgLatency + " ms" : "N/A"}`,
+    `P95 latency: ${p95Latency !== null ? p95Latency + " ms" : "N/A"}`,
+    `Min latency: ${minLatency !== null ? minLatency + " ms" : "N/A"}`,
+    `Max latency: ${maxLatency !== null ? maxLatency + " ms" : "N/A"}`
+  ].join("\n");
+
+  if (dashboardUrl) {
+    plain += `\n\nDashboard:\n${dashboardUrl}`;
+  }
+  if (issues.length) {
+    plain += `\n\nIssue services:`;
+    issues.forEach(function (item) {
+      plain += `\n- ${item.name}: ${item.url}`;
+    });
+  }
+
+  const channels = [];
+  if (sendMail) {
+    let mailResult = { channel: "mail", sent: true, target_count: recipients.length };
+    try {
+      GmailApp.sendEmail(recipients.join(","), subject, plain, { htmlBody: htmlBody });
+    } catch (err) {
+      mailResult = { channel: "mail", sent: false, target_count: recipients.length, error: String(err) };
+    }
+    channels.push(mailResult);
+  }
+
+  const shouldSendLine = cfg.notify_mode === "mail_line" || cfg.notify_mode === "all" || cfg.notify_mode === "line_only";
+  const shouldSendTeams = cfg.notify_mode === "mail_teams" || cfg.notify_mode === "all";
+  const shouldDispatchExtraChannels = forceSend || issues.length > 0;
+
+  if (shouldDispatchExtraChannels && shouldSendLine) {
+    channels.push(callNotifierSafe_("line", function () {
+      return sendLineAlert_(cfg, subject, at, services, issues, dashboardUrl, monitorLabel, portMap);
+    }));
+  }
+  if (shouldDispatchExtraChannels && shouldSendTeams) {
+    channels.push(callNotifierSafe_("teams", function () {
+      return sendTeamsAlert_(cfg, subject, at, services, issues, dashboardUrl, monitorLabel, portMap);
+    }));
+  }
+
+  const sentCount = channels.filter(function (item) { return item && item.sent; }).length;
+  const failedChannels = channels.filter(function (item) { return item && !item.sent && item.error; });
+  const hadMailQuotaError = failedChannels.some(function (item) {
+    return item.channel === "mail" && /次數過多|Limit exceeded|Service invoked too many times/i.test(String(item.error || ""));
+  });
+
+  logMeta.warning = hadMailQuotaError ? "Mail quota exceeded, fallback channels were used." : "";
+  appendNotificationLogs_(logMeta, channels);
+
+  return {
+    ok: sentCount > 0,
+    sent: sentCount > 0,
+    partial: sentCount > 0 && failedChannels.length > 0,
+    issues: issues.length,
+    channels: channels,
+    error: sentCount > 0 ? "" : (failedChannels[0] ? failedChannels[0].error : "All channels failed"),
+    warning: logMeta.warning
+  };
 }
 
 function buildAlertText_(subject, at, services, issues, dashboardUrl, monitorLabel, portMap) {
@@ -1566,6 +1943,14 @@ function escapeHtml_(s) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function safeJsonStringify_(value) {
+  try {
+    return JSON.stringify(value || {});
+  } catch (_) {
+    return "{}";
+  }
 }
 
 function truncateText_(s, maxLen) {

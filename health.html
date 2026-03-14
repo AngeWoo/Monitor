@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./assets/style.css?v=20260311-a005" />
+  <link rel="stylesheet" href="./assets/style.css?v=20260314-a006" />
 </head>
 <body>
   <div id="loadingOverlay" class="loading-overlay">
@@ -66,8 +66,42 @@
         </table>
       </div>
     </section>
+    <section class="panel">
+      <div class="panel-header">
+        <h2>通知發送紀錄</h2>
+        <div class="row-actions">
+          <button id="mailLogTabBtn" class="btn tiny secondary active" type="button" data-log-channel="mail">郵件</button>
+          <button id="lineLogTabBtn" class="btn tiny secondary" type="button" data-log-channel="line">LINE</button>
+          <button id="notifyLogRefreshBtn" class="btn tiny secondary" type="button">重新載入</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>發送時間</th>
+              <th>觸發方式</th>
+              <th>結果</th>
+              <th>異常 / 服務</th>
+              <th>對象</th>
+              <th>主旨</th>
+              <th>備註</th>
+            </tr>
+          </thead>
+          <tbody id="notifyLogBody"></tbody>
+        </table>
+      </div>
+      <div class="history-footer">
+        <span id="notifyLogPageInfo" class="hint"></span>
+        <div class="row-actions">
+          <button id="notifyLogPrevBtn" class="btn tiny secondary" type="button">上一頁</button>
+          <button id="notifyLogNextBtn" class="btn tiny secondary" type="button">下一頁</button>
+        </div>
+      </div>
+      <p id="notifyLogMessage" class="message"></p>
+    </section>
   </main>
 
-  <script type="module" src="./assets/health.js?v=20260311-a005"></script>
+  <script type="module" src="./assets/health.js?v=20260314-a006"></script>
 </body>
 </html>
