@@ -38,6 +38,7 @@ const PROP_REPORT_CONFIG = "REPORT_CONFIG";
 const PROP_REPORT_LAST_SLOT = "REPORT_LAST_SLOT";
 const PROP_DASHBOARD_URL = "DASHBOARD_URL";
 const PROP_LINE_TARGETS = "LINE_TARGETS";
+const PROP_SERVICE_RECOMMENDATION_MIGRATION = "SERVICE_RECOMMENDED_SETTINGS_V1";
 
 const TEST_DELETE_DEFAULT_SHEET = SHEET_CHECKS;
 
@@ -303,6 +304,7 @@ function runScheduler() {
     const now = new Date();
     const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
     ensureHeaders_(sh, SERVICE_HEADERS);
+    applyRecommendedServiceSettingsIfNeeded_();
     const values = sh.getDataRange().getValues();
     if (values.length < 2) {
       maybeSendScheduledReport_(now);
@@ -360,6 +362,81 @@ function defaultServiceCheckConfig_() {
     retry_delay_ms: 1200,
     consecutive_failures: 0
   };
+}
+
+function applyRecommendedServiceSettingsIfNeeded_() {
+  const props = PropertiesService.getScriptProperties();
+  if (props.getProperty(PROP_SERVICE_RECOMMENDATION_MIGRATION)) {
+    return { ok: true, applied: false, skipped: true };
+  }
+
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+  if (!sh) {
+    props.setProperty(PROP_SERVICE_RECOMMENDATION_MIGRATION, new Date().toISOString());
+    return { ok: true, applied: false, updated: 0 };
+  }
+
+  ensureHeaders_(sh, SERVICE_HEADERS);
+  const values = sh.getDataRange().getValues();
+  if (values.length < 2) {
+    props.setProperty(PROP_SERVICE_RECOMMENDATION_MIGRATION, new Date().toISOString());
+    return { ok: true, applied: false, updated: 0 };
+  }
+
+  const header = values[0];
+  const idx = indexMap_(header);
+  const recommended = defaultServiceCheckConfig_();
+  const settingKeys = [
+    "check_type",
+    "expected_keyword",
+    "forbidden_keyword",
+    "expected_final_url",
+    "secondary_url",
+    "allow_redirects",
+    "max_redirects",
+    "latency_warn_ms",
+    "fail_threshold",
+    "retry_count",
+    "retry_delay_ms"
+  ];
+  const now = new Date();
+  let updated = 0;
+
+  for (let r = 1; r < values.length; r++) {
+    let dirty = false;
+    settingKeys.forEach(function (key) {
+      const columnIndex = idx[key];
+      if (columnIndex === undefined) return;
+
+      const recommendedValue = recommended[key];
+      let currentValue = values[r][columnIndex];
+
+      if (typeof recommendedValue === "boolean") {
+        currentValue = toBool_(currentValue);
+      } else if (typeof recommendedValue === "number") {
+        currentValue = toNum_(currentValue, recommendedValue);
+      } else {
+        currentValue = String(currentValue || "").trim();
+      }
+
+      if (currentValue === recommendedValue) return;
+      values[r][columnIndex] = recommendedValue;
+      dirty = true;
+    });
+
+    if (dirty) {
+      if (idx.updated_at !== undefined) values[r][idx.updated_at] = now;
+      updated += 1;
+    }
+  }
+
+  if (updated > 0) {
+    sh.getRange(2, 1, values.length - 1, header.length).setValues(values.slice(1));
+    invalidateServicesCache_();
+  }
+
+  props.setProperty(PROP_SERVICE_RECOMMENDATION_MIGRATION, now.toISOString());
+  return { ok: true, applied: updated > 0, updated: updated };
 }
 
 function normalizeServiceConfig_(source) {
@@ -757,6 +834,7 @@ function hardDeleteService_(id) {
 }
 
 function listServices_() {
+  applyRecommendedServiceSettingsIfNeeded_();
   var cache = CacheService.getScriptCache();
   var cached = cache.get(CACHE_KEY_SERVICES);
   if (cached) {
