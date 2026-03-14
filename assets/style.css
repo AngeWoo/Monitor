@@ -669,6 +669,304 @@ label {
   word-break: break-word;
 }
 
+.service-admin-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.service-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(160deg, #fffdf7, #f7fbff);
+  box-shadow: 0 8px 20px rgba(50, 64, 91, 0.08);
+  overflow: hidden;
+}
+
+.service-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid #e8edf5;
+  background: linear-gradient(180deg, #ffffff, #f8fbff);
+}
+
+.service-card-title {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.service-card-title strong {
+  font-size: 1.02rem;
+}
+
+.service-card-url {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.service-card-side {
+  display: grid;
+  gap: 4px;
+  justify-items: end;
+  text-align: right;
+}
+
+.service-card-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.service-card-meta {
+  color: var(--muted);
+  font-size: 0.84rem;
+  max-width: 280px;
+  white-space: normal;
+}
+
+.service-card-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.service-card-body-compact {
+  gap: 12px;
+}
+
+.service-card-section {
+  display: grid;
+  gap: 8px;
+}
+
+.service-card-section h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text);
+}
+
+.service-card-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.service-card-grid label {
+  margin: 0;
+}
+
+.service-card .field-default {
+  display: none;
+}
+
+.service-main-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.service-main-grid label,
+.service-card-grid-compact label {
+  margin: 0;
+}
+
+.service-main-grid input:not([type="checkbox"]),
+.service-main-grid select,
+.service-card-grid-compact input:not([type="checkbox"]),
+.service-card-grid-compact select {
+  height: 46px;
+}
+
+.service-main-grid select,
+.service-card-grid-compact select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 12px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+}
+
+.service-result-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.service-result-item {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #f7fafc;
+  border: 1px solid #e6edf4;
+}
+
+.service-result-item span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.service-result-item strong {
+  font-size: 0.93rem;
+}
+
+.service-result-item-wide {
+  grid-column: 1 / -1;
+}
+
+.service-advanced {
+  border: 1px solid #e6edf4;
+  border-radius: 12px;
+  background: #fcfdff;
+  padding: 10px 12px;
+}
+
+.service-advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text);
+  list-style: none;
+}
+
+.service-advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.service-advanced summary::after {
+  content: "展開";
+  float: right;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.service-advanced[open] summary::after {
+  content: "收合";
+}
+
+.service-card-grid-compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.span-1 {
+  grid-column: span 1;
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+.span-3 {
+  grid-column: span 3;
+}
+
+.service-inline-check {
+  align-self: end;
+  min-height: 0;
+}
+
+.service-result-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.service-result-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #f7fafc;
+  border: 1px solid #e6edf4;
+}
+
+.service-result-grid span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.service-result-grid strong {
+  font-size: 0.95rem;
+}
+
+.service-result-wide {
+  grid-column: 1 / -1;
+}
+
+.service-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.service-empty {
+  padding: 18px;
+  border-radius: 14px;
+  border: 1px dashed var(--line);
+  background: #fbfdff;
+  color: var(--muted);
+  text-align: center;
+}
+
+.service-add-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.service-defaults-intro {
+  margin: 0 0 12px;
+}
+
+.service-defaults-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.service-defaults-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #e6edf4;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.service-defaults-grid strong {
+  font-size: 0.86rem;
+  color: var(--text);
+}
+
+.service-defaults-grid span {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.service-defaults-grid-compact {
+  margin-top: 12px;
+}
+
+.field-default {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
 /* ---- Scroll FAB (floating scroll buttons) ---- */
 .fab-wrap {
   position: fixed;
@@ -711,6 +1009,10 @@ label {
 }
 
 @media (max-width: 980px) {
+  .service-admin-list {
+    grid-template-columns: 1fr;
+  }
+
   .summary-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -721,6 +1023,25 @@ label {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .service-card-grid,
+  .service-main-grid,
+  .service-result-strip,
+  .service-card-grid-compact,
+  .service-result-grid,
+  .service-add-grid,
+  .service-defaults-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .service-card-section .service-card-grid label,
+  .service-main-grid label,
+  .service-card-grid-compact label,
+  .span-1,
+  .span-2,
+  .span-3 {
+    grid-column: auto !important;
   }
 
   .test-data-grid {
@@ -766,6 +1087,16 @@ label {
   .report-actions {
     justify-content: flex-start;
   }
+
+  .service-defaults-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .service-main-grid,
+  .service-result-strip,
+  .service-card-grid-compact {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 620px) {
@@ -807,6 +1138,35 @@ label {
   .row-actions {
     flex-wrap: wrap;
     gap: 6px;
+  }
+
+  .service-card-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .service-card-side {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .service-card-meta {
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .service-card-grid,
+  .service-result-grid,
+  .service-add-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .service-card-actions {
+    flex-direction: column;
+  }
+
+  .service-card-actions .btn {
+    width: 100%;
   }
 
   /* ---- 4 cards per row on mobile ---- */

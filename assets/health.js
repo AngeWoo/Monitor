@@ -1,4 +1,4 @@
-import { apiGet, apiPost, fmtDate, safeText, statusBadge, loadHostBadge } from './common.js?v=20260311-a005';
+import { apiGet, apiPost, fmtDate, safeText, statusBadge, loadHostBadge } from './common.js?v=20260314-a006';
 
 const summaryEl = document.getElementById('healthSummary');
 const staleBody = document.getElementById('staleBody');
@@ -139,7 +139,7 @@ function renderSummary(stats) {
 
 function renderStaleRows(rows) {
   if (!rows.length) {
-    staleBody.innerHTML = '<tr><td colspan="6">目前沒有逾時服務</td></tr>';
+    staleBody.innerHTML = '<tr><td colspan="8">目前沒有逾時服務</td></tr>';
     return;
   }
 
@@ -150,9 +150,21 @@ function renderStaleRows(rows) {
       <td data-label="最後檢查">${check.lastCheck ? fmtDate(check.lastCheck) : '-'}</td>
       <td data-label="下次預定">${check.nextCheck ? fmtDate(check.nextCheck) : '-'}</td>
       <td data-label="狀態">${statusBadge(service.last_status)}</td>
-      <td data-label="原因">${safeText(check.reason)}</td>
+      <td data-label="HTTP">${safeText(service.last_http_code) || '-'}</td>
+      <td data-label="錯誤訊息" class="log-cell-wrap">${safeText(service.last_error) || '-'}</td>
+      <td data-label="原因">${safeText(getHealthReason(service, check))}</td>
     </tr>
   `).join('');
+}
+
+function getHealthReason(service, check) {
+  const status = safeText(service.last_status);
+  if (status && status !== 'UP') {
+    return service.last_error_type
+      ? `${status} / ${safeText(service.last_error_type)}`
+      : status;
+  }
+  return safeText(check.reason);
 }
 
 function notificationStatusBadge(item) {
@@ -286,7 +298,10 @@ async function loadHealth(onProgress) {
       service,
       check: analyzeService(service, nowMs)
     }));
-    const staleList = analyzed.filter((item) => item.check.stale && isEnabled(item.service.enabled));
+    const staleList = analyzed.filter((item) => {
+      const abnormalStatus = safeText(item.service.last_status) !== 'UP';
+      return isEnabled(item.service.enabled) && (item.check.stale || abnormalStatus);
+    });
 
     const lastCheckMs = enabledServices
       .map((service) => toDate(service.last_check_at))
@@ -325,7 +340,7 @@ async function loadHealth(onProgress) {
       lastCheckAt: null,
       schedulerState: 'stalled'
     });
-    staleBody.innerHTML = '<tr><td colspan="6">健康檢查讀取失敗</td></tr>';
+    staleBody.innerHTML = '<tr><td colspan="8">健康檢查讀取失敗</td></tr>';
     healthMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
     if (typeof onProgress === 'function') onProgress(100);
   } finally {

@@ -120,8 +120,11 @@ export function normalizeLatencyMs(value) {
 }
 
 export function statusBadge(status) {
-  if (status === "UP") return '<span class="badge up">UP</span>';
-  if (status === "DOWN") return '<span class="badge down">DOWN</span>';
+  const value = String(status || "").toUpperCase();
+  if (value === "UP") return '<span class="badge up">UP</span>';
+  if (value === "SLOW") return '<span class="badge unknown">SLOW</span>';
+  if (value === "UNSTABLE") return '<span class="badge unknown">UNSTABLE</span>';
+  if (value) return `<span class="badge down">${value}</span>`;
   return '<span class="badge unknown">UNKNOWN</span>';
 }
 

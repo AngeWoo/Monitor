@@ -1,4 +1,4 @@
-import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge, loadHostBadge } from './common.js?v=20260311-a005';
+import { apiGet, fmtDate, normalizeLatencyMs, safeText, statusBadge, loadHostBadge } from './common.js?v=20260314-a006';
 
 const summaryEl = document.getElementById('summary');
 const tbody = document.getElementById('servicesBody');
@@ -169,7 +169,7 @@ function renderMinuteHistory(serviceName, rows) {
 
     const bucket = grouped.get(key);
     if (r.status === 'UP') bucket.upCount += 1;
-    if (r.status === 'DOWN') bucket.downCount += 1;
+    if (r.status !== 'UP') bucket.downCount += 1;
 
     const latency = normalizeLatencyMs(r.latency_ms);
     if (latency !== null) {
@@ -259,7 +259,7 @@ function renderMinuteHistoryPage() {
 
   minuteHistoryBody.innerHTML = pageRows.map((r) => {
     const avgLatency = r.avgLatency >= 0 ? r.avgLatency : '-';
-    const hasIssue = Number(r.downCount || 0) === 1;
+    const hasIssue = Number(r.downCount || 0) > 0;
     const rowClass = hasIssue ? 'history-alert-row' : '';
     return `
       <tr class="${rowClass}">
@@ -278,7 +278,7 @@ function renderSummary() {
   const total = services.length;
   const enabled = services.filter(s => String(s.enabled).toUpperCase() === 'TRUE').length;
   const up = services.filter(s => s.last_status === 'UP').length;
-  const down = services.filter(s => s.last_status === 'DOWN').length;
+  const down = services.filter(s => safeText(s.last_status) !== 'UP').length;
   const availability = enabled > 0 ? `${((up / enabled) * 100).toFixed(1)}%` : '0.0%';
   const activeRange = getActiveRange();
   const rangeText = `${activeRange.start ? fmtDate(activeRange.start) : '起始'}\n~ ${activeRange.end ? fmtDate(activeRange.end) : '結束'}`;
@@ -591,7 +591,7 @@ async function renderAllLatencyStats(onProgress) {
         .filter((v) => v !== null);
       if (values.length) {
         const avg = Math.round(values.reduce((sum, v) => sum + v, 0) / values.length);
-        const downCount = rows.filter((r) => safeText(r?.status) === 'DOWN').length;
+        const downCount = rows.filter((r) => safeText(r?.status) !== 'UP').length;
         statsById.set(item.id, {
           id: item.id,
           avgLatency: avg,
@@ -702,9 +702,9 @@ async function renderMetrics(onProgress) {
     : null;
   const maxLatency = validLatency.length ? Math.max(...validLatency) : null;
   const minLatency = validLatency.length ? Math.min(...validLatency) : null;
-  const pointColors = rows.map(r => (safeText(r.status) === 'DOWN' ? '#be2d2d' : '#2aa18f'));
+  const pointColors = rows.map(r => (safeText(r.status) === 'UP' ? '#2aa18f' : '#be2d2d'));
   const upCount = rows.filter(r => r.status === 'UP').length;
-  const downCount = rows.filter(r => r.status === 'DOWN').length;
+  const downCount = rows.filter(r => r.status !== 'UP').length;
 
   const hasRange = latencyRange.start || latencyRange.end;
   const rangeText = hasRange
