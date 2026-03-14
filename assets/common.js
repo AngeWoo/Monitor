@@ -122,10 +122,16 @@ export function normalizeLatencyMs(value) {
 export function statusBadge(status) {
   const value = String(status || "").toUpperCase();
   if (value === "UP") return '<span class="badge up">UP</span>';
+  if (value === "UP-") return '<span class="badge warn">UP-</span>';
   if (value === "SLOW") return '<span class="badge unknown">SLOW</span>';
   if (value === "UNSTABLE") return '<span class="badge unknown">UNSTABLE</span>';
   if (value) return `<span class="badge down">${value}</span>`;
   return '<span class="badge unknown">UNKNOWN</span>';
+}
+
+export function isUpEquivalentStatus(status) {
+  const value = String(status || "").toUpperCase();
+  return value === "UP" || value === "UP-";
 }
 
 export function serviceCheckModeBadge(service) {

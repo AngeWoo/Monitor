@@ -1,4 +1,4 @@
-import { apiGet, apiPost, safeText, loadHostBadge, fmtDate, serviceCheckModeBadge, serviceCheckModeDetail } from './common.js?v=20260314-a016';
+import { apiGet, apiPost, safeText, loadHostBadge, fmtDate, serviceCheckModeBadge, serviceCheckModeDetail } from './common.js?v=20260314-a018';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
@@ -167,6 +167,7 @@ function finishDeleteProgress(success) {
 function statusDot(status) {
   const value = String(status || '').toUpperCase();
   if (value === 'UP') return '<span class="status-dot dot-up" title="UP"></span>';
+  if (value === 'UP-') return '<span class="status-dot dot-unknown" title="UP-"></span>';
   if (value === 'SLOW' || value === 'UNSTABLE') return '<span class="status-dot dot-unknown" title="UNSTABLE"></span>';
   if (value) return '<span class="status-dot dot-down" title="DOWN"></span>';
   return '<span class="status-dot dot-unknown" title="UNKNOWN"></span>';
@@ -194,7 +195,7 @@ function probeTemplate(probe) {
           <strong>${safeText(probe.probe_name) || safeText(probe.probe_id) || '(未命名 Probe)'}</strong>
           <div class="probe-card-subtitle">${safeText(probe.host_name) || '-'} | ${safeText(probe.platform) || '-'} ${safeText(probe.platform_release) || ''}</div>
         </div>
-        <span class="probe-status-badge ${statusClass}">${state.label}</span>
+        <div class="probe-card-side-actions"><span class="probe-status-badge ${statusClass}">${state.label}</span><div class="probe-card-actions"><button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${safeText(probe.probe_id)}">離線</button><button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${safeText(probe.probe_id)}">清理</button></div></div>
       </div>
       <div class="probe-card-grid">
         <div><span>Probe ID</span><strong>${safeText(probe.probe_id) || '-'}</strong></div>
@@ -263,22 +264,64 @@ function probeCompactTemplate(probe) {
   `;
 }
 
+function probeCompactTemplateV2(probe) {
+  const state = probeOnlineStateDisplay(probe);
+  const statusClass = state.online ? 'probe-online' : 'probe-offline';
+  const summaryText = safeText(probe.last_status_summary) || '-';
+  const errorText = safeText(probe.last_run_error) || '';
+  const versionText = safeText(probe.probe_version) || '-';
+  const appVersionText = probe.app_version ? ` / App ${safeText(probe.app_version)}` : '';
+  return `
+    <article class="probe-card probe-card-compact probe-card-compact-v2">
+      <div class="probe-card-header">
+        <div>
+          <strong>${safeText(probe.probe_name) || safeText(probe.probe_id) || '(Probe)'}</strong>
+          <div class="probe-card-subtitle">${safeText(probe.host_name) || '-'} | ${safeText(probe.platform) || '-'} ${safeText(probe.platform_release) || ''}</div>
+        </div>
+        <div class="probe-card-side-actions">
+          <span class="probe-status-badge ${statusClass}">${state.label}</span>
+          <div class="probe-card-actions">
+            <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${safeText(probe.probe_id)}">離線</button>
+            <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${safeText(probe.probe_id)}">清理</button>
+          </div>
+        </div>
+      </div>
+      <div class="probe-compact-grid-six">
+        <div class="probe-compact-kpi"><span>Probe ID</span><strong>${safeText(probe.probe_id) || '-'}</strong></div>
+        <div class="probe-compact-kpi"><span>Status</span><strong>${safeText(probe.last_run_status) || '-'}</strong></div>
+        <div class="probe-compact-kpi"><span>Result / DOWN</span><strong>${safeText(probe.last_result_count) || '0'} / ${safeText(probe.last_down_count) || '0'}</strong></div>
+        <div class="probe-compact-kpi"><span>Last seen</span><strong>${fmtDate(probe.last_seen_at)}</strong></div>
+        <div class="probe-compact-kpi"><span>Last run</span><strong>${fmtDate(probe.last_run_finished_at || probe.last_run_started_at)}</strong></div>
+        <div class="probe-compact-kpi"><span>Version</span><strong>${versionText}${appVersionText}</strong></div>
+      </div>
+      <div class="probe-compact-summary-row">
+        <div class="probe-compact-summary"><span>Summary</span><strong class="log-cell-wrap">${summaryText}</strong></div>
+        ${errorText && errorText !== '-' ? `<div class="probe-compact-summary probe-compact-error"><span>Error</span><strong class="log-cell-wrap">${errorText}</strong></div>` : ''}
+      </div>
+    </article>
+  `;
+}
+
 function renderProbes() {
   if (!probesBody) return;
   if (!probes.length) {
     probesBody.innerHTML = '<div class="service-empty">目前沒有 Probe</div>';
     return;
   }
-  probesBody.innerHTML = probes.map(probeCompactTemplate).join('');
+  probesBody.innerHTML = probes.map(probeCompactTemplateV2).join('');
 }
 
 function rowTemplate(rawService) {
   const service = normalizeService(rawService);
   const enabled = isEnabled(service.enabled);
   const allowRedirects = isEnabled(service.allow_redirects);
+  const gasStatusLabel = safeText(service.gas_status) || safeText(service.last_status) || '-';
+  const probeStatusLabel = safeText(service.probe_status) || (service.check_mode === 'dual_pending' ? '待同步' : '-');
+
+  const cardToneClass = String(service.last_status || '').toUpperCase() === 'UNSTABLE' ? ' service-card-warn' : '';
 
   return `
-    <article class="service-card">
+    <article class="service-card${cardToneClass}">
       <div class="service-card-header">
         <div class="service-card-title">
           <span class="name-cell">${statusDot(service.last_status)}<strong>${safeText(service.name) || '(未命名服務)'}</strong></span>
@@ -321,6 +364,8 @@ function rowTemplate(rawService) {
         <div class="service-result-strip">
           <div class="service-result-item"><span>測試模式</span><strong>${safeText(service.check_mode_label) || '單一測試'}</strong></div>
           <div class="service-result-item"><span>狀態</span><strong>${safeText(service.last_status) || '-'}</strong></div>
+          <div class="service-result-item"><span>GAS 狀態</span><strong class="service-status-chip">${statusDot(gasStatusLabel)}${gasStatusLabel}</strong></div>
+          <div class="service-result-item"><span>Probe 狀態</span><strong class="service-status-chip">${statusDot(probeStatusLabel)}${probeStatusLabel}</strong></div>
           <div class="service-result-item"><span>HTTP</span><strong>${safeText(service.last_http_code) || '-'}</strong></div>
           <div class="service-result-item"><span>Error Type</span><strong>${safeText(service.last_error_type) || '-'}</strong></div>
           <div class="service-result-item"><span>連續失敗</span><strong>${safeText(service.consecutive_failures) || '0'}</strong></div>
@@ -376,6 +421,7 @@ function rowTemplate(rawService) {
 
       <div class="service-card-actions">
         <button class="btn tiny" data-action="save" data-id="${safeText(service.id)}">儲存設定</button>
+        <button class="btn tiny secondary" data-action="refresh" data-id="${safeText(service.id)}">立即重測</button>
         <button class="btn tiny danger" data-action="disable" data-id="${safeText(service.id)}">停用</button>
         <button class="btn tiny danger" data-action="remove" data-id="${safeText(service.id)}" data-name="${escapeAttr(service.name)}">刪除</button>
       </div>
@@ -481,6 +527,21 @@ async function handleTableClick(event) {
       const res = await apiPost(formDataToPayload(id));
       if (!res.ok) throw new Error(res.error || 'updateService failed');
       adminMessage.textContent = '設定已更新';
+    } else if (action === 'refresh') {
+      adminMessage.textContent = '重測中...';
+      const res = await apiPost({ action: 'refreshServiceNow', id, request_probe: true, requested_by: 'admin' });
+      if (!res.ok) throw new Error(res.error || 'refreshServiceNow failed');
+      const data = res.data || {};
+      const probeRequested = !!data.probe_requested;
+      adminMessage.textContent = probeRequested
+        ? 'GAS 已完成重測，已通知在線 Probe 立即同步'
+        : 'GAS 已完成重測';
+      await Promise.all([loadServices(), loadProbes()]);
+      if (probeRequested) {
+        window.setTimeout(() => {
+          Promise.all([loadServices(), loadProbes()]).catch(() => {});
+        }, 6500);
+      }
     } else if (action === 'disable') {
       adminMessage.textContent = '停用中...';
       const res = await apiPost({ action: 'deleteService', id });
@@ -502,7 +563,7 @@ async function handleTableClick(event) {
   }
 }
 
-async function handleRunNow() {
+async function legacyHandleRunNow() {
   adminMessage.textContent = '執行中...';
   try {
     const res = await apiPost({ action: 'runNow' });
@@ -542,15 +603,20 @@ async function handleRunNowWithOverlay() {
 
 function applyReportConfig(cfg) {
   if (!reportForm) return;
+  const rawMode = safeText(cfg.notify_mode || 'mail');
+  const notifyMode = rawMode === 'all'
+    ? 'mail_line'
+    : rawMode === 'mail_teams'
+      ? 'mail'
+      : rawMode;
   reportForm.elements.recipients.value = safeText(cfg.recipients || '');
-  reportForm.elements.notify_mode.value = safeText(cfg.notify_mode || 'mail');
+  reportForm.elements.notify_mode.value = notifyMode;
   reportForm.elements.frequency.value = safeText(cfg.frequency || 'hourly');
   reportForm.elements.daily_hour.value = Number.isFinite(Number(cfg.daily_hour)) ? Number(cfg.daily_hour) : 9;
   reportForm.elements.enabled.checked = String(cfg.enabled).toLowerCase() !== 'false';
   reportForm.elements.only_on_issue.checked = String(cfg.only_on_issue).toLowerCase() !== 'false';
   reportForm.elements.line_channel_access_token.value = safeText(cfg.line_channel_access_token || '');
   reportForm.elements.line_to.value = safeText(cfg.line_to || '');
-  reportForm.elements.teams_webhook_url.value = safeText(cfg.teams_webhook_url || '');
   reportForm.elements.monitor_label.value = safeText(cfg.monitor_label || '');
 }
 
@@ -593,8 +659,7 @@ async function handleSaveReport(event) {
     enabled: reportForm.elements.enabled.checked,
     only_on_issue: reportForm.elements.only_on_issue.checked,
     line_channel_access_token: reportForm.elements.line_channel_access_token.value.trim(),
-    line_to: reportForm.elements.line_to.value.trim(),
-    teams_webhook_url: reportForm.elements.teams_webhook_url.value.trim()
+    line_to: reportForm.elements.line_to.value.trim()
   };
 
   try {
@@ -708,6 +773,27 @@ async function handleDeleteTestData(event) {
   } catch (err) {
     finishDeleteProgress(false);
     deleteTestDataMessage.textContent = `刪除失敗: ${safeText(err.message)}`;
+  }
+}
+
+async function handleRunNow() {
+  adminMessage.textContent = '正在執行健康檢查...';
+  try {
+    const res = await apiPost({ action: 'runNow', request_probe: true, requested_by: 'admin' });
+    if (!res.ok) throw new Error(res.error || 'runNow failed');
+    const data = res.data || {};
+    const probeRequested = !!data.probe_requested;
+    adminMessage.textContent = probeRequested
+      ? 'GAS 已完成整體健康檢查，已通知在線 Probe 同步重測全部服務'
+      : 'GAS 已完成整體健康檢查';
+    await Promise.all([loadServices(), loadProbes()]);
+    if (probeRequested) {
+      window.setTimeout(() => {
+        Promise.all([loadServices(), loadProbes()]).catch(() => {});
+      }, 6500);
+    }
+  } catch (err) {
+    adminMessage.textContent = `執行失敗: ${safeText(err.message)}`;
   }
 }
 

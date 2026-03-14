@@ -1,4 +1,4 @@
-import { apiGet, apiPost, fmtDate, safeText, statusBadge, loadHostBadge, serviceCheckModeBadge, serviceCheckModeDetail } from './common.js?v=20260314-a016';
+import { apiGet, apiPost, fmtDate, safeText, statusBadge, loadHostBadge, serviceCheckModeBadge, serviceCheckModeDetail, isUpEquivalentStatus } from './common.js?v=20260314-a018';
 
 const summaryEl = document.getElementById('healthSummary');
 const staleBody = document.getElementById('staleBody');
@@ -313,7 +313,7 @@ async function loadHealth(onProgress) {
       check: analyzeService(service, nowMs)
     }));
     const staleList = analyzed.filter((item) => {
-      const abnormalStatus = safeText(item.service.last_status) !== 'UP';
+      const abnormalStatus = !isUpEquivalentStatus(item.service.last_status);
       return isEnabled(item.service.enabled) && (item.check.stale || abnormalStatus);
     });
 
@@ -363,7 +363,7 @@ async function loadHealth(onProgress) {
   }
 }
 
-async function runNowAndCheck() {
+async function legacyRunNowAndCheck() {
   healthMessage.textContent = '正在立即執行健康檢查...';
   try {
     const res = await apiPost({ action: 'runNow' });
@@ -439,6 +439,24 @@ async function initFirstLoad() {
       firstLoadPending = false;
       window.setTimeout(() => setLoadingOverlay(false), 220);
     }
+  }
+}
+
+async function runNowAndCheck() {
+  healthMessage.textContent = '正在執行 GAS + Probe 健康檢查...';
+  try {
+    const res = await apiPost({ action: 'runNow', request_probe: true, requested_by: 'health' });
+    if (!res.ok) throw new Error(res.error || 'runNow failed');
+    const data = res.data || {};
+    const probeRequested = !!data.probe_requested;
+    healthMessage.textContent = probeRequested
+      ? 'GAS 已完成檢查，已通知在線 Probe 同步重測，約 6 秒後更新結果'
+      : 'GAS 已完成健康檢查';
+    window.setTimeout(() => {
+      loadHealth().catch(() => {});
+    }, probeRequested ? 6500 : 5000);
+  } catch (err) {
+    healthMessage.textContent = `執行失敗: ${safeText(err.message)}`;
   }
 }
 
