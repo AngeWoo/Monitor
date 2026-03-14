@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./assets/style.css?v=20260314-a010" />
+  <link rel="stylesheet" href="./assets/style.css?v=20260314-a016" />
 </head>
 <body>
   <div id="loadingOverlay" class="loading-overlay">
@@ -144,7 +144,7 @@
         <div><strong>必須包含關鍵字</strong><span>預設空白，不檢查</span></div>
         <div><strong>不可包含關鍵字</strong><span>預設空白，不檢查</span></div>
         <div><strong>預期最終網址</strong><span>預設空白，不限制</span></div>
-        <div><strong>第二觀測網址</strong><span>預設空白，單一觀測</span></div>
+        <div><strong>備援/第二入口網址</strong><span>預設空白，只檢查主網址</span></div>
         <div><strong>允許跳轉</strong><span>預設啟用</span></div>
         <div><strong>最大跳轉次數</strong><span>預設 5 次</span></div>
         <div><strong>延遲警戒</strong><span>預設 5000 ms</span></div>
@@ -185,7 +185,7 @@
           <input name="expected_final_url" type="url" placeholder="https://example.com/final" />
         </label>
         <label>
-          第二觀測網址
+          備援/第二入口網址
           <input name="secondary_url" type="url" placeholder="https://backup.example.com/health" />
         </label>
         <label>
@@ -219,6 +219,18 @@
 
     <section class="panel">
       <div class="panel-header">
+        <h2>Probe 管理</h2>
+        <div class="row-actions">
+          <button id="reloadProbesBtn" class="btn" type="button">重新整理</button>
+        </div>
+      </div>
+      <p class="hint">顯示每台本機 probe 的在線狀態、最後心跳與最近一次執行結果。</p>
+      <div id="adminProbesBody" class="probe-admin-list"></div>
+      <p id="probesMessage" class="message"></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
         <h2>服務管理</h2>
         <div class="row-actions">
           <button id="runNowBtn" class="btn secondary" type="button">立即執行健康檢查</button>
@@ -231,6 +243,6 @@
     </section>
   </main>
 
-  <script type="module" src="./assets/admin.js?v=20260314-a010"></script>
+<script type="module" src="./assets/admin.js?v=20260314-a016"></script>
 </body>
 </html>

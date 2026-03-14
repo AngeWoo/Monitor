@@ -1,0 +1,11 @@
+{
+  "api_base": "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec",
+  "probe_id": "local-office-01",
+  "probe_name": "Office Probe 01",
+  "request_timeout_ms": 15000,
+  "app_version": "1.0.0",
+  "show_result_window": true,
+  "show_result_window_on_error_only": true,
+  "show_control_window": false,
+  "control_window_interval_sec": 60
+}

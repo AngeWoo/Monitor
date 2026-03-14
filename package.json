@@ -1,0 +1,14 @@
+{
+  "name": "monitor-local-probe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Windows local probe for Service Monitor",
+  "bin": "local-probe.js",
+  "scripts": {
+    "probe:run": "node local-probe.js",
+    "probe:build:win": "pkg local-probe.js --targets node18-win-x64 --output dist/monitor-local-probe.exe"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  }
+}

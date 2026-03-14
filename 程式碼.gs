@@ -8,6 +8,8 @@
  *********************************/
 const SHEET_SERVICES   = "services";
 const SHEET_CHECKS     = "checks";
+const SHEET_PROBE_CHECKS = "probe_checks";
+const SHEET_PROBES = "probes";
 const SHEET_PORT_SCANS = "port_scans";
 const SHEET_NOTIFY_LOGS = "notify_logs";
 const API_KEY = "";
@@ -39,6 +41,8 @@ const PROP_REPORT_LAST_SLOT = "REPORT_LAST_SLOT";
 const PROP_DASHBOARD_URL = "DASHBOARD_URL";
 const PROP_LINE_TARGETS = "LINE_TARGETS";
 const PROP_SERVICE_RECOMMENDATION_MIGRATION = "SERVICE_RECOMMENDED_SETTINGS_V1";
+const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
+const PROBE_RESULT_GRACE_MS = 2 * 60 * 1000;
 
 const TEST_DELETE_DEFAULT_SHEET = SHEET_CHECKS;
 
@@ -55,6 +59,18 @@ const CHECK_HEADERS = [
   "timestamp", "service_id", "status", "http_code", "latency_ms", "error_type", "error", "final_url"
 ];
 
+const PROBE_CHECK_HEADERS = [
+  "timestamp", "probe_id", "service_id", "service_name", "status", "http_code", "latency_ms",
+  "error_type", "error", "final_url", "observed_url", "details_json"
+];
+
+const PROBE_HEADERS = [
+  "probe_id", "probe_name", "host_name", "host_user", "platform", "platform_release",
+  "app_version", "probe_version", "api_base", "enabled", "last_seen_at", "last_run_started_at",
+  "last_run_finished_at", "last_run_status", "last_run_error", "last_result_count",
+  "last_down_count", "last_status_summary", "created_at", "updated_at"
+];
+
 function initSheets() {
   const ss = SpreadsheetApp.getActive();
 
@@ -65,6 +81,14 @@ function initSheets() {
   let s2 = ss.getSheetByName(SHEET_CHECKS);
   if (!s2) s2 = ss.insertSheet(SHEET_CHECKS);
   ensureHeaders_(s2, CHECK_HEADERS);
+
+  let s2b = ss.getSheetByName(SHEET_PROBE_CHECKS);
+  if (!s2b) s2b = ss.insertSheet(SHEET_PROBE_CHECKS);
+  ensureHeaders_(s2b, PROBE_CHECK_HEADERS);
+
+  let s2c = ss.getSheetByName(SHEET_PROBES);
+  if (!s2c) s2c = ss.insertSheet(SHEET_PROBES);
+  ensureHeaders_(s2c, PROBE_HEADERS);
 
   let s3 = ss.getSheetByName(SHEET_PORT_SCANS);
   if (!s3) s3 = ss.insertSheet(SHEET_PORT_SCANS);
@@ -116,6 +140,21 @@ function doGet(e) {
         break;
       case "updatePortScan":
         result = updatePortScan_(p);
+        break;
+      case "appendProbeCheck":
+        result = appendProbeCheck_(p);
+        break;
+      case "upsertProbe":
+        result = upsertProbe_(p);
+        break;
+      case "listProbes":
+        result = listProbes_();
+        break;
+      case "markProbeOffline":
+        result = markProbeOffline_(p);
+        break;
+      case "clearProbeState":
+        result = clearProbeState_(p);
         break;
       case "listServices":
         result = listServices_();
@@ -285,6 +324,21 @@ function doPost(e) {
         break;
       case "updatePortScan":
         result = updatePortScan_(body);
+        break;
+      case "appendProbeCheck":
+        result = appendProbeCheck_(body);
+        break;
+      case "upsertProbe":
+        result = upsertProbe_(body);
+        break;
+      case "listProbes":
+        result = listProbes_();
+        break;
+      case "markProbeOffline":
+        result = markProbeOffline_(body);
+        break;
+      case "clearProbeState":
+        result = clearProbeState_(body);
         break;
       default:
         result = { ok: false, error: "Unknown action" };
@@ -845,9 +899,411 @@ function listServices_() {
   var values = sh.getDataRange().getValues();
   var result = values.length < 2
     ? { ok: true, data: [] }
-    : { ok: true, data: values.slice(1).map(function(r) { return objFromRow_(values[0], r); }) };
+    : { ok: true, data: buildServiceViews_(values.slice(1).map(function(r) { return objFromRow_(values[0], r); })) };
   try { cache.put(CACHE_KEY_SERVICES, JSON.stringify(result), CACHE_TTL_SERVICES); } catch (_) {}
   return result;
+}
+
+function buildServiceViews_(services) {
+  var nowMs = Date.now();
+  var onlineProbes = getOnlineProbes_(nowMs);
+  if (!onlineProbes.length) {
+    return services.map(function(service) {
+      return buildSingleProbeServiceView_(service);
+    });
+  }
+
+  var onlineProbeMap = {};
+  onlineProbes.forEach(function(probe) {
+    onlineProbeMap[String(probe.probe_id || "").trim()] = probe;
+  });
+
+  var latestProbeChecks = getLatestProbeChecksByService_(onlineProbeMap);
+  return services.map(function(service) {
+    return buildAggregatedServiceView_(service, latestProbeChecks[String(service.id || "").trim()], onlineProbes, nowMs);
+  });
+}
+
+function buildSingleProbeServiceView_(service) {
+  var view = cloneRecord_(service);
+  var gasStatus = normalizeServiceStatus_(service.last_status);
+  view.check_mode = "single";
+  view.check_mode_label = "單一測試";
+  view.check_mode_detail = "GAS:" + (gasStatus || "UNKNOWN");
+  view.gas_status = gasStatus;
+  view.gas_http_code = service.last_http_code || "";
+  view.gas_error_type = service.last_error_type || "";
+  view.gas_error = service.last_error || "";
+  view.gas_last_check_at = service.last_check_at || "";
+  view.probe_status = "";
+  view.probe_http_code = "";
+  view.probe_error_type = "";
+  view.probe_error = "";
+  view.probe_last_check_at = "";
+  view.probe_id = "";
+  view.probe_name = "";
+  view.online_probe_count = 0;
+  return view;
+}
+
+function buildAggregatedServiceView_(service, probeCheck, onlineProbes, nowMs) {
+  var view = cloneRecord_(service);
+  var gasStatus = normalizeServiceStatus_(service.last_status);
+  var gasErrorType = String(service.last_error_type || "").trim();
+  var gasError = String(service.last_error || "").trim();
+  var gasCheckAt = service.last_check_at || "";
+  var onlineCount = Array.isArray(onlineProbes) ? onlineProbes.length : 0;
+
+  view.gas_status = gasStatus;
+  view.gas_http_code = service.last_http_code || "";
+  view.gas_error_type = gasErrorType;
+  view.gas_error = gasError;
+  view.gas_last_check_at = gasCheckAt;
+  view.online_probe_count = onlineCount;
+
+  if (!probeCheck || !isFreshProbeCheck_(probeCheck, service, nowMs)) {
+    view.check_mode = "dual_pending";
+    view.check_mode_label = "雙探針待同步";
+    view.check_mode_detail = "GAS:" + (gasStatus || "UNKNOWN") + " | 等待本機 Probe";
+    view.probe_status = "";
+    view.probe_http_code = "";
+    view.probe_error_type = "";
+    view.probe_error = "";
+    view.probe_last_check_at = "";
+    view.probe_id = "";
+    view.probe_name = "";
+
+    if (isDownLikeStatus_(gasStatus)) {
+      view.last_status = "UNSTABLE";
+      view.last_error_type = "PROBE_PENDING";
+      view.last_error = joinStatusText_([gasError, "等待 Probe 確認"]);
+    }
+    return view;
+  }
+
+  var probeStatus = normalizeServiceStatus_(probeCheck.status);
+  var probeErrorType = String(probeCheck.error_type || "").trim();
+  var probeError = String(probeCheck.error || "").trim();
+  var gasDown = isDownLikeStatus_(gasStatus);
+  var probeDown = isDownLikeStatus_(probeStatus);
+  var gasSlow = gasStatus === "SLOW";
+  var probeSlow = probeStatus === "SLOW";
+  var gasUnstable = gasStatus === "UNSTABLE";
+  var probeUnstable = probeStatus === "UNSTABLE";
+  var combinedHttp = combineScalarDisplay_(service.last_http_code, probeCheck.http_code);
+  var combinedCheckedAt = maxDateValue_(service.last_check_at, probeCheck.timestamp);
+  var combinedLatency = chooseCombinedLatency_(service.last_latency_ms, probeCheck.latency_ms, gasSlow || probeSlow || gasDown || probeDown);
+  var probeName = String((probeCheck && probeCheck.probe_name) || "").trim();
+  var probeId = String((probeCheck && probeCheck.probe_id) || "").trim();
+
+  view.check_mode = "dual";
+  view.check_mode_label = "雙探針測試";
+  view.check_mode_detail = "GAS:" + (gasStatus || "UNKNOWN") + " | " + (probeName || probeId || "Probe") + ":" + (probeStatus || "UNKNOWN");
+  view.probe_status = probeStatus;
+  view.probe_http_code = probeCheck.http_code || "";
+  view.probe_error_type = probeErrorType;
+  view.probe_error = probeError;
+  view.probe_last_check_at = probeCheck.timestamp || "";
+  view.probe_id = probeId;
+  view.probe_name = probeName;
+  view.last_check_at = combinedCheckedAt || view.last_check_at;
+  view.last_http_code = combinedHttp;
+  if (combinedLatency !== "") view.last_latency_ms = combinedLatency;
+
+  if (gasDown && probeDown) {
+    view.last_status = "DOWN";
+    view.last_error_type = "DUAL_CONFIRMED_DOWN";
+    view.last_error = joinStatusText_([
+      formatStatusSource_("GAS", gasStatus, gasErrorType || gasError),
+      formatStatusSource_(probeName || probeId || "Probe", probeStatus, probeErrorType || probeError)
+    ]);
+    return view;
+  }
+
+  if (gasDown !== probeDown) {
+    view.last_status = "UNSTABLE";
+    view.last_error_type = "DUAL_MISMATCH";
+    view.last_error = joinStatusText_([
+      formatStatusSource_("GAS", gasStatus, gasErrorType || gasError),
+      formatStatusSource_(probeName || probeId || "Probe", probeStatus, probeErrorType || probeError)
+    ]);
+    return view;
+  }
+
+  if (gasUnstable || probeUnstable) {
+    view.last_status = "UNSTABLE";
+    view.last_error_type = "UNSTABLE";
+    view.last_error = joinStatusText_([
+      formatStatusSource_("GAS", gasStatus, gasErrorType || gasError),
+      formatStatusSource_(probeName || probeId || "Probe", probeStatus, probeErrorType || probeError)
+    ]);
+    return view;
+  }
+
+  if (gasSlow || probeSlow) {
+    view.last_status = "SLOW";
+    view.last_error_type = "SLOW";
+    view.last_error = joinStatusText_([
+      gasSlow ? formatStatusSource_("GAS", gasStatus, gasError) : "",
+      probeSlow ? formatStatusSource_(probeName || probeId || "Probe", probeStatus, probeError) : ""
+    ]);
+    return view;
+  }
+
+  view.last_status = "UP";
+  view.last_error_type = "";
+  view.last_error = "";
+  return view;
+}
+
+function getOnlineProbes_(nowMs) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_PROBES);
+  if (!sh) return [];
+  ensureHeaders_(sh, PROBE_HEADERS);
+  var values = sh.getDataRange().getValues();
+  if (values.length < 2) return [];
+  return values.slice(1).map(function(row) {
+    return objFromRow_(values[0], row);
+  }).filter(function(probe) {
+    return isProbeOnline_(probe, nowMs);
+  });
+}
+
+function getLatestProbeChecksByService_(onlineProbeMap) {
+  var probeIds = Object.keys(onlineProbeMap || {});
+  if (!probeIds.length) return {};
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_PROBE_CHECKS);
+  if (!sh) return {};
+  ensureHeaders_(sh, PROBE_CHECK_HEADERS);
+  var values = sh.getDataRange().getValues();
+  if (values.length < 2) return {};
+  var latestByService = {};
+
+  values.slice(1).forEach(function(row) {
+    var item = objFromRow_(values[0], row);
+    var probeId = String(item.probe_id || "").trim();
+    if (!onlineProbeMap[probeId]) return;
+    var serviceId = String(item.service_id || "").trim();
+    if (!serviceId) return;
+    var tsMs = toTimeMs_(item.timestamp);
+    if (!tsMs) return;
+    var existing = latestByService[serviceId];
+    if (existing && existing.timestamp_ms >= tsMs) return;
+    item.timestamp_ms = tsMs;
+    item.probe_name = onlineProbeMap[probeId].probe_name || probeId;
+    latestByService[serviceId] = item;
+  });
+
+  return latestByService;
+}
+
+function isProbeOnline_(probe, nowMs) {
+  if (!probe || !toBool_(probe.enabled)) return false;
+  var lastSeenMs = toTimeMs_(probe.last_seen_at);
+  if (!lastSeenMs) return false;
+  if ((nowMs - lastSeenMs) > PROBE_ONLINE_WINDOW_MS) return false;
+  var runStatus = normalizeServiceStatus_(probe.last_run_status);
+  return ["OFFLINE", "STOPPED", "CLOSED"].indexOf(runStatus) === -1;
+}
+
+function isFreshProbeCheck_(probeCheck, service, nowMs) {
+  if (!probeCheck) return false;
+  var timestampMs = Number(probeCheck.timestamp_ms || toTimeMs_(probeCheck.timestamp) || 0);
+  if (!timestampMs) return false;
+  var intervalMin = Math.max(1, toNum_(service && service.interval_min, 5));
+  var maxAgeMs = intervalMin * 60000 + PROBE_RESULT_GRACE_MS;
+  return (nowMs - timestampMs) <= maxAgeMs;
+}
+
+function toTimeMs_(value) {
+  if (!value) return 0;
+  var dt = new Date(value);
+  var ms = dt.getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function normalizeServiceStatus_(status) {
+  return String(status || "").trim().toUpperCase();
+}
+
+function isDownLikeStatus_(status) {
+  var value = normalizeServiceStatus_(status);
+  return !!value && ["UP", "SLOW", "UNSTABLE"].indexOf(value) === -1;
+}
+
+function cloneRecord_(record) {
+  var clone = {};
+  Object.keys(record || {}).forEach(function(key) {
+    clone[key] = record[key];
+  });
+  return clone;
+}
+
+function joinStatusText_(parts) {
+  return (parts || []).filter(function(part) {
+    return !!String(part || "").trim();
+  }).join(" | ");
+}
+
+function formatStatusSource_(source, status, detail) {
+  var text = String(source || "").trim() + ":" + normalizeServiceStatus_(status || "");
+  var detailText = String(detail || "").trim();
+  return detailText ? text + " (" + detailText + ")" : text;
+}
+
+function combineScalarDisplay_(leftValue, rightValue) {
+  var left = String(leftValue || "").trim();
+  var right = String(rightValue || "").trim();
+  if (!left && !right) return "";
+  if (!left) return right;
+  if (!right) return left;
+  return left === right ? left : left + " / " + right;
+}
+
+function maxDateValue_(leftValue, rightValue) {
+  var leftMs = toTimeMs_(leftValue);
+  var rightMs = toTimeMs_(rightValue);
+  if (!leftMs && !rightMs) return "";
+  return new Date(Math.max(leftMs || 0, rightMs || 0));
+}
+
+function chooseCombinedLatency_(leftValue, rightValue, preferWorst) {
+  var leftNum = Number(leftValue);
+  var rightNum = Number(rightValue);
+  var leftOk = Number.isFinite(leftNum) && leftNum >= 0;
+  var rightOk = Number.isFinite(rightNum) && rightNum >= 0;
+  if (!leftOk && !rightOk) return "";
+  if (!leftOk) return Math.round(rightNum);
+  if (!rightOk) return Math.round(leftNum);
+  return Math.round(preferWorst ? Math.max(leftNum, rightNum) : Math.min(leftNum, rightNum));
+}
+
+function listProbes_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_PROBES);
+  if (!sh) return { ok: true, data: [] };
+  ensureHeaders_(sh, PROBE_HEADERS);
+  var values = sh.getDataRange().getValues();
+  return values.length < 2
+    ? { ok: true, data: [] }
+    : { ok: true, data: values.slice(1).map(function(r) { return objFromRow_(values[0], r); }) };
+}
+
+function upsertProbe_(payload) {
+  const probeId = String((payload && payload.probe_id) || "").trim();
+  if (!probeId) return { ok: false, error: "Missing probe_id" };
+
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(SHEET_PROBES);
+  if (!sh) sh = ss.insertSheet(SHEET_PROBES);
+  ensureHeaders_(sh, PROBE_HEADERS);
+  const values = sh.getDataRange().getValues();
+  const header = values[0];
+  const idx = indexMap_(header);
+  const now = new Date();
+  const probeName = String((payload && payload.probe_name) || probeId).trim();
+  const rowObj = {
+    probe_id: probeId,
+    probe_name: probeName || probeId,
+    host_name: String((payload && payload.host_name) || "").trim(),
+    host_user: String((payload && payload.host_user) || "").trim(),
+    platform: String((payload && payload.platform) || "").trim(),
+    platform_release: String((payload && payload.platform_release) || "").trim(),
+    app_version: String((payload && payload.app_version) || "").trim(),
+    probe_version: String((payload && payload.probe_version) || "").trim(),
+    api_base: String((payload && payload.api_base) || "").trim(),
+    enabled: payload && payload.enabled !== undefined ? toBool_(payload.enabled) : true,
+    last_seen_at: now,
+    last_run_started_at: payload && payload.last_run_started_at ? new Date(payload.last_run_started_at) : "",
+    last_run_finished_at: payload && payload.last_run_finished_at ? new Date(payload.last_run_finished_at) : "",
+    last_run_status: String((payload && payload.last_run_status) || "").trim(),
+    last_run_error: String((payload && payload.last_run_error) || "").trim(),
+    last_result_count: toNum_(payload && payload.last_result_count, 0),
+    last_down_count: toNum_(payload && payload.last_down_count, 0),
+    last_status_summary: String((payload && payload.last_status_summary) || "").trim(),
+    created_at: now,
+    updated_at: now
+  };
+
+  if (values.length >= 2) {
+    for (let r = 1; r < values.length; r++) {
+      if (String(values[r][idx.probe_id] || "").trim() !== probeId) continue;
+
+      Object.keys(rowObj).forEach(function (key) {
+        if (idx[key] === undefined) return;
+        if (key === "created_at") return;
+        if (payload && payload[key] === undefined && !["last_seen_at", "updated_at"].includes(key)) return;
+        sh.getRange(r + 1, idx[key] + 1).setValue(rowObj[key]);
+      });
+      sh.getRange(r + 1, idx.last_seen_at + 1).setValue(now);
+      sh.getRange(r + 1, idx.updated_at + 1).setValue(now);
+      invalidateServicesCache_();
+      return { ok: true, updated: true, probe_id: probeId };
+    }
+  }
+
+  sh.appendRow(rowFromObj_(header, rowObj));
+  invalidateServicesCache_();
+  return { ok: true, created: true, probe_id: probeId };
+}
+
+function updateProbeRow_(probeId, updater) {
+  const id = String(probeId || "").trim();
+  if (!id) return { ok: false, error: "Missing probe_id" };
+
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_PROBES);
+  if (!sh) return { ok: false, error: "Probe sheet not found" };
+  ensureHeaders_(sh, PROBE_HEADERS);
+
+  const values = sh.getDataRange().getValues();
+  if (values.length < 2) return { ok: false, error: "Probe not found" };
+  const idx = indexMap_(values[0]);
+
+  for (let r = 1; r < values.length; r++) {
+    if (String(values[r][idx.probe_id] || "").trim() !== id) continue;
+    const rowData = objFromRow_(values[0], values[r]);
+    const next = updater(rowData, idx) || {};
+    Object.keys(next).forEach(function (key) {
+      if (idx[key] === undefined) return;
+      sh.getRange(r + 1, idx[key] + 1).setValue(next[key]);
+    });
+    if (idx.updated_at !== undefined) {
+      sh.getRange(r + 1, idx.updated_at + 1).setValue(new Date());
+    }
+    invalidateServicesCache_();
+    return { ok: true, probe_id: id };
+  }
+
+  return { ok: false, error: "Probe not found" };
+}
+
+function markProbeOffline_(payload) {
+  const probeId = String((payload && payload.probe_id) || "").trim();
+  const summary = String((payload && payload.summary) || "Marked offline by admin").trim();
+  return updateProbeRow_(probeId, function () {
+    return {
+      last_run_status: "OFFLINE",
+      last_run_error: "",
+      last_result_count: 0,
+      last_down_count: 0,
+      last_status_summary: summary
+    };
+  });
+}
+
+function clearProbeState_(payload) {
+  const probeId = String((payload && payload.probe_id) || "").trim();
+  return updateProbeRow_(probeId, function () {
+    return {
+      last_seen_at: "",
+      last_run_started_at: "",
+      last_run_finished_at: "",
+      last_run_status: "",
+      last_run_error: "",
+      last_result_count: 0,
+      last_down_count: 0,
+      last_status_summary: ""
+    };
+  });
 }
 
 /**
@@ -1037,6 +1493,54 @@ function appendCheckLog_(serviceId, result) {
   sh.appendRow(rowFromObj_(header, rowObj));
 }
 
+function appendProbeCheck_(payload) {
+  const probeId = String((payload && payload.probe_id) || "").trim();
+  const serviceId = String((payload && payload.service_id) || "").trim();
+  if (!probeId) return { ok: false, error: "Missing probe_id" };
+  if (!serviceId) return { ok: false, error: "Missing service_id" };
+
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(SHEET_PROBE_CHECKS);
+  if (!sh) sh = ss.insertSheet(SHEET_PROBE_CHECKS);
+  ensureHeaders_(sh, PROBE_CHECK_HEADERS);
+  const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const rowObj = {
+    timestamp: new Date(),
+    probe_id: probeId,
+    service_id: serviceId,
+    service_name: String((payload && payload.service_name) || "").trim(),
+    status: String((payload && payload.status) || "").trim(),
+    http_code: toNum_((payload && payload.http_code), 0),
+    latency_ms: toNum_((payload && payload.latency_ms), 0),
+    error_type: String((payload && payload.error_type) || "").trim(),
+    error: String((payload && payload.error) || "").trim(),
+    final_url: String((payload && payload.final_url) || "").trim(),
+    observed_url: String((payload && payload.observed_url) || "").trim(),
+    details_json: safeJsonStringify_(payload && payload.details ? payload.details : {})
+  };
+  sh.appendRow(rowFromObj_(header, rowObj));
+  invalidateServicesCache_();
+  upsertProbe_({
+    probe_id: probeId,
+    probe_name: payload && payload.probe_name,
+    host_name: payload && payload.host_name,
+    host_user: payload && payload.host_user,
+    platform: payload && payload.platform,
+    platform_release: payload && payload.platform_release,
+    app_version: payload && payload.app_version,
+    probe_version: payload && payload.probe_version,
+    api_base: payload && payload.api_base,
+    last_run_status: String((payload && payload.status) || "").trim(),
+    last_run_error: String((payload && payload.error) || "").trim(),
+    last_result_count: payload && payload.last_result_count,
+    last_down_count: payload && payload.last_down_count,
+    last_status_summary: payload && payload.last_status_summary,
+    last_run_started_at: payload && payload.last_run_started_at,
+    last_run_finished_at: payload && payload.last_run_finished_at
+  });
+  return { ok: true };
+}
+
 /*************** Delete By Date (ignore is_test) ***************/
 function deleteTestDataByDate_(payload) {
   var date = String((payload && payload.date) || "").trim();
@@ -1125,7 +1629,7 @@ function deleteTestDataByDate_(payload) {
 }
 
 /*************** Cache Keys & TTLs ***************/
-var CACHE_KEY_SERVICES    = 'list_services_v1';
+var CACHE_KEY_SERVICES    = 'list_services_v2';
 var CACHE_TTL_SERVICES    = 35;   // 35 seconds
 var CACHE_KEY_METRICS_PFX = 'metrics_all_v1_';
 var CACHE_TTL_METRICS     = 60;   // 60 seconds (only stored when JSON < 90 KB)
