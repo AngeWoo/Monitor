@@ -1,10 +1,19 @@
 Option Explicit
 
-Dim shell, baseDir, ps1Path, cmd
+Dim shell, fso
+Dim baseDir, ps1Path, commandLine
+
 Set shell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
 
-baseDir = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
-ps1Path = baseDir & "\support\monitor-local-probe-ui.ps1"
-cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & ps1Path & """"
+baseDir = fso.GetParentFolderName(WScript.ScriptFullName)
+ps1Path = baseDir & "\monitor-local-probe-ui.ps1"
 
-shell.Run cmd, 0, False
+Function Quote(ByVal value)
+  Quote = """" & value & """"
+End Function
+
+If fso.FileExists(ps1Path) Then
+  commandLine = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & Quote(ps1Path)
+  shell.Run commandLine, 0, False
+End If
