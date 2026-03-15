@@ -145,6 +145,7 @@ body {
 .topbar > * {
   position: relative;
   z-index: 1;
+  min-width: 0;
 }
 
 @keyframes topbar-rainbow-rotate {
@@ -216,6 +217,7 @@ nav a.active {
     0 1px 0 rgba(255, 255, 255, 0.88) inset,
     0 4px 0 rgba(0, 0, 0, 0.05),
     0 8px 22px rgba(50, 64, 91, 0.12);
+  min-width: 0;
 }
 
 .summary-grid .metric:nth-child(1) {
@@ -279,6 +281,7 @@ nav a.active {
   border-radius: 18px;
   padding: 16px;
   box-shadow: 0 10px 25px #32405b12;
+  min-width: 0;
 }
 
 .panel h2 {
@@ -291,6 +294,11 @@ nav a.active {
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.panel-header > *,
+.history-footer > * {
+  min-width: 0;
 }
 
 .all-availability-badge {
@@ -314,6 +322,7 @@ nav a.active {
 
 .table-wrap {
   overflow-x: auto;
+  max-width: 100%;
 }
 
 table {
@@ -680,6 +689,11 @@ label {
   display: flex;
   gap: 8px;
   align-items: center;
+  min-width: 0;
+}
+
+.row-actions > * {
+  min-width: 0;
 }
 
 .latency-filters {
@@ -2031,5 +2045,68 @@ label {
 
   .history-footer .hint {
     width: 100%;
+  }
+}
+
+@media (max-width: 1100px) {
+  .page-dashboard .topbar,
+  .page-dashboard .container {
+    width: calc(100vw - 24px);
+  }
+
+  .page-dashboard .topbar {
+    margin: 16px auto 10px;
+    padding: 14px 16px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .page-dashboard nav {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .page-dashboard nav a {
+    flex: 1 1 calc(33.333% - 6px);
+    text-align: center;
+  }
+
+  .page-dashboard .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .page-dashboard .panel-header,
+  .page-dashboard .history-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .page-dashboard .panel-header .row-actions,
+  .page-dashboard .history-footer .row-actions,
+  .page-dashboard .latency-filters {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .page-dashboard .row-actions {
+    flex-wrap: wrap;
+  }
+
+  .page-dashboard .row-actions .btn:not(.tiny),
+  .page-dashboard .row-actions .select,
+  .page-dashboard .row-actions input:not([type="checkbox"]) {
+    flex: 1 1 180px;
+  }
+
+  .page-dashboard .latency-filters input[type="datetime-local"] {
+    width: 100%;
+    flex: 1 1 calc(50% - 6px);
+    min-width: 0;
+  }
+
+  .page-dashboard .all-availability-badge,
+  .page-dashboard .hint {
+    white-space: normal;
   }
 }
