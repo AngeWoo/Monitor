@@ -243,6 +243,36 @@ function Get-ProbeRunSignal {
   return $null
 }
 
+function Get-PortScanSignal {
+  if (-not $apiBase) { return $null }
+  try {
+    $uriBuilder = [System.UriBuilder]::new($apiBase)
+    $uriBuilder.Query = "action=getPortScanSignal"
+    $response = Invoke-RestMethod -Uri $uriBuilder.Uri.AbsoluteUri -Method Get
+    if ($response -and $response.ok -and $response.data) {
+      return $response.data
+    }
+  } catch {
+  }
+  return $null
+}
+
+function Test-RecentSignal {
+  param(
+    [string]$RequestedAt,
+    [int]$MaxAgeSeconds = 90
+  )
+
+  if ([string]::IsNullOrWhiteSpace($RequestedAt)) { return $false }
+  try {
+    $requestedTime = [datetime]::Parse($RequestedAt).ToUniversalTime()
+    $ageSeconds = ([datetime]::UtcNow - $requestedTime).TotalSeconds
+    return $ageSeconds -ge 0 -and $ageSeconds -le $MaxAgeSeconds
+  } catch {
+    return $false
+  }
+}
+
 function Get-PortScanConfig {
   if (-not $apiBase) { return $null }
   try {
@@ -638,12 +668,25 @@ $pollTimer.Add_Tick({
 
 $signalTimer.Add_Tick({
   if ($script:isProbeRunning) { return }
+  if (-not $script:isProbeOnline) { return }
+
+  $portSignal = Get-PortScanSignal
+  if ($portSignal) {
+    $portRequestedAt = [string]$portSignal.requested_at
+    if (($portRequestedAt -ne $script:lastHandledSignalAt) -and (Test-RecentSignal -RequestedAt $portRequestedAt)) {
+      $script:lastHandledSignalAt = $portRequestedAt
+      Start-ProbeProcess -TriggerLabel "Remote Port Scan requested"
+      return
+    }
+  }
+
   $signal = Get-ProbeRunSignal
   if (-not $signal) { return }
 
   $requestedAt = [string]$signal.requested_at
   if ([string]::IsNullOrWhiteSpace($requestedAt)) { return }
   if ($requestedAt -eq $script:lastHandledSignalAt) { return }
+  if (-not (Test-RecentSignal -RequestedAt $requestedAt)) { return }
 
   $script:lastHandledSignalAt = $requestedAt
   $serviceName = [string]$signal.service_name
