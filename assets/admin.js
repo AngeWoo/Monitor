@@ -74,6 +74,24 @@ function probeOnlineStateDisplay(probe) {
   };
 }
 
+function isHealthyServiceStatus(status) {
+  const value = String(status || '').trim().toUpperCase();
+  return value === 'UP' || value === 'UP-';
+}
+
+function hasWarningServiceStatus(status) {
+  const value = String(status || '').trim().toUpperCase();
+  if (!value || value === '-' || value === 'UNKNOWN' || value === 'PENDING') return false;
+  return !isHealthyServiceStatus(value);
+}
+
+function shouldUseWarnServiceCard(service) {
+  if (!isEnabled(service?.enabled)) return false;
+  return hasWarningServiceStatus(service?.last_status)
+    || hasWarningServiceStatus(service?.gas_status)
+    || hasWarningServiceStatus(service?.probe_status);
+}
+
 function renderServices() {
   if (!adminBody) return;
   if (!services.length) {
@@ -423,8 +441,8 @@ probeCompactTemplateV2 = function probeCompactTemplateV2Safe(probe) {
         <div class="probe-card-side-actions">
           <span class="probe-status-badge ${statusClass}">${state.label}</span>
           <div class="probe-card-actions">
-            <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${probeId}">Mark offline</button>
-            <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${probeId}">Clear state</button>
+            <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${probeId}">標記離線</button>
+            <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${probeId}">清除狀態</button>
           </div>
         </div>
       </div>
@@ -451,7 +469,7 @@ rowTemplate = function rowTemplateSafe(rawService) {
   const gasStatusLabel = safeText(service.gas_status) || safeText(service.last_status) || '-';
   const probeStatusLabel = safeText(service.probe_status) || (service.check_mode === 'dual_pending' ? 'Pending' : '-');
   const serviceId = escapeAttr(service.id);
-  const cardToneClass = String(service.last_status || '').toUpperCase() === 'UNSTABLE' ? ' service-card-warn' : '';
+  const cardToneClass = shouldUseWarnServiceCard(service) ? ' service-card-warn' : '';
 
   return `
     <article class="service-card${cardToneClass}">
@@ -553,10 +571,10 @@ rowTemplate = function rowTemplateSafe(rawService) {
       </div>
 
       <div class="service-card-actions">
-        <button class="btn tiny" data-action="save" data-id="${serviceId}">Save</button>
-        <button class="btn tiny secondary" data-action="refresh" data-id="${serviceId}">Refresh</button>
-        <button class="btn tiny danger" data-action="disable" data-id="${serviceId}">Disable</button>
-        <button class="btn tiny danger" data-action="remove" data-id="${serviceId}" data-name="${escapeAttr(service.name)}">Remove</button>
+        <button class="btn tiny" data-action="save" data-id="${serviceId}">儲存</button>
+        <button class="btn tiny secondary" data-action="refresh" data-id="${serviceId}">重新檢查</button>
+        <button class="btn tiny danger" data-action="disable" data-id="${serviceId}">停用</button>
+        <button class="btn tiny danger" data-action="remove" data-id="${serviceId}" data-name="${escapeAttr(service.name)}">移除</button>
       </div>
     </article>
   `;
@@ -808,8 +826,8 @@ function probeCompactTemplateV2(probe) {
         <div class="probe-card-side-actions">
           <span class="probe-status-badge ${statusClass}">${state.label}</span>
           <div class="probe-card-actions">
-            <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${probeId}">Mark offline</button>
-            <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${probeId}">Clear state</button>
+            <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${probeId}">標記離線</button>
+            <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${probeId}">清除狀態</button>
           </div>
         </div>
       </div>
@@ -836,7 +854,7 @@ function rowTemplate(rawService) {
   const gasStatusLabel = safeText(service.gas_status) || safeText(service.last_status) || '-';
   const probeStatusLabel = safeText(service.probe_status) || (service.check_mode === 'dual_pending' ? 'Pending' : '-');
   const serviceId = escapeAttr(service.id);
-  const cardToneClass = String(service.last_status || '').toUpperCase() === 'UNSTABLE' ? ' service-card-warn' : '';
+  const cardToneClass = shouldUseWarnServiceCard(service) ? ' service-card-warn' : '';
 
   return `
     <article class="service-card${cardToneClass}">
@@ -938,10 +956,10 @@ function rowTemplate(rawService) {
       </div>
 
       <div class="service-card-actions">
-        <button class="btn tiny" data-action="save" data-id="${serviceId}">Save</button>
-        <button class="btn tiny secondary" data-action="refresh" data-id="${serviceId}">Refresh</button>
-        <button class="btn tiny danger" data-action="disable" data-id="${serviceId}">Disable</button>
-        <button class="btn tiny danger" data-action="remove" data-id="${serviceId}" data-name="${escapeAttr(service.name)}">Remove</button>
+        <button class="btn tiny" data-action="save" data-id="${serviceId}">儲存</button>
+        <button class="btn tiny secondary" data-action="refresh" data-id="${serviceId}">重新檢查</button>
+        <button class="btn tiny danger" data-action="disable" data-id="${serviceId}">停用</button>
+        <button class="btn tiny danger" data-action="remove" data-id="${serviceId}" data-name="${escapeAttr(service.name)}">移除</button>
       </div>
     </article>
   `;
