@@ -287,6 +287,17 @@ function formatLatencyValue(value) {
   return latency === null ? '-' : `${latency} ms`;
 }
 
+function formatPortScanCell(service) {
+  const scan = service?.latest_port_scan;
+  if (!scan) return '<span class="port-scan-value is-empty">—</span>';
+  const ports = Array.isArray(scan.open_ports) ? scan.open_ports : [];
+  const content = ports.length ? escapeHtml(ports.join(', ')) : '無開啟';
+  const scannedAt = scan.scanned_at ? fmtDate(scan.scanned_at) : '-';
+  const host = escapeHtml(safeText(scan.host || ''));
+  const title = host ? `${host} | ${scannedAt}` : scannedAt;
+  return `<span class="port-scan-value" title="${escapeAttr(title)}">${content}</span>`;
+}
+
 function getServiceRangeText(rows) {
   if (!rows.length) return '此時段沒有檢查資料';
   const firstTs = rows[0]?.timestamp;
@@ -340,6 +351,7 @@ function renderServiceDetailModal(service) {
   const enabledText = String(service?.enabled || '').toUpperCase() === 'TRUE' ? '啟用中' : '停用';
   const lastCheckText = fmtDate(service?.last_check_at);
   const latestLatencyText = formatLatencyValue(service?.last_latency_ms);
+  const latestPortScan = formatPortScanCell(service);
 
   if (serviceDetailModalTitle) serviceDetailModalTitle.textContent = `${serviceName} 詳細資料`;
   if (serviceDetailModalSubtitle) serviceDetailModalSubtitle.textContent = '目前服務基本資料';
@@ -366,6 +378,7 @@ function renderServiceDetailModal(service) {
         ${renderModalMetaItem('最後檢查時間', `<strong>${escapeHtml(lastCheckText)}</strong>`)}
         ${renderModalMetaItem('啟用狀態', `<strong>${escapeHtml(enabledText)}</strong>`)}
         ${renderModalMetaItem('最新延遲', `<strong>${escapeHtml(latestLatencyText)}</strong>`)}
+        ${renderModalMetaItem('開啟 Ports', latestPortScan)}
         ${renderModalMetaItem('錯誤摘要', `<span>${escapeHtml(latestError || '-')}</span>`, 'service-modal-meta-item-wide')}
       </div>
     </section>
@@ -498,7 +511,7 @@ async function loadChecksDateRange(onProgress) {
 
 renderTable = function renderTableSafe() {
   if (!services.length) {
-    tbody.innerHTML = '<tr><td colspan="8">尚無資料</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9">尚無資料</td></tr>';
     return;
   }
 
@@ -518,6 +531,7 @@ renderTable = function renderTableSafe() {
         </td>
         <td data-label="狀態">${statusBadge(s.last_status)}</td>
         <td data-label="HTTP">${escapeHtml(safeText(s.last_http_code) || '-')}</td>
+        <td data-label="開啟 Ports">${formatPortScanCell(s)}</td>
         <td data-label="延遲">${latencyMs ?? '-'}</td>
         <td data-label="間隔">${escapeHtml(safeText(s.interval_min) || '-')}</td>
         <td data-label="最後檢查">${fmtDate(s.last_check_at)}</td>
@@ -1229,7 +1243,7 @@ function renderSummary() {
 
 function renderTable() {
   if (!services.length) {
-    tbody.innerHTML = '<tr><td colspan="8">?垓????</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9">?垓????</td></tr>';
     return;
   }
 
@@ -1249,6 +1263,7 @@ function renderTable() {
         </td>
         <td data-label="????>${statusBadge(s.last_status)}</td>
         <td data-label="HTTP">${escapeHtml(safeText(s.last_http_code) || '-')}</td>
+        <td data-label="開啟 Ports">${formatPortScanCell(s)}</td>
         <td data-label="?勗?蹓?>${latencyMs ?? '-'}</td>
         <td data-label="?擗?">${escapeHtml(safeText(s.interval_min) || '-')}</td>
         <td data-label="???綽???>${fmtDate(s.last_check_at)}</td>

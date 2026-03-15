@@ -649,6 +649,11 @@ td {
   vertical-align: middle;
 }
 
+.page-dashboard th,
+.page-dashboard td {
+  padding: 9px 7px;
+}
+
 .th-sort {
   border: 0;
   background: transparent;
@@ -691,6 +696,23 @@ a {
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
+}
+
+.page-dashboard .url-ellipsis {
+  max-width: 280px;
+}
+
+.port-scan-value {
+  display: inline-block;
+  max-width: 152px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.port-scan-value.is-empty {
+  color: var(--muted);
 }
 
 .badge {

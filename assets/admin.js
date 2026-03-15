@@ -16,6 +16,8 @@ const sendReportNowBtn = document.getElementById('sendReportNowBtn');
 const portScanConfigForm = document.getElementById('portScanConfigForm');
 const portScanConfigMessage = document.getElementById('portScanConfigMessage');
 const reloadPortScanConfigBtn = document.getElementById('reloadPortScanConfigBtn');
+const triggerPortScanBtn = document.getElementById('triggerPortScanBtn');
+const misplacedStartPortScanBtn = document.getElementById('startPortScanBtn');
 const deleteTestDataForm = document.getElementById('deleteTestDataForm');
 const deleteTestDataMessage = document.getElementById('deleteTestDataMessage');
 const deleteTestDataDateSelect = document.getElementById('deleteTestDataDateSelect');
@@ -41,6 +43,10 @@ let firstLoadPending = true;
 let deleteProgressTimer = null;
 let deleteProgressValue = 0;
 const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
+
+if (misplacedStartPortScanBtn) {
+  misplacedStartPortScanBtn.remove();
+}
 
 function normalizeService(rawService) {
   const service = Object.assign({}, serviceDefaults(), rawService || {});
@@ -772,7 +778,7 @@ async function loadPortScanConfig(onProgress) {
     applyPortScanConfig(res.data || {});
     if (portScanConfigMessage) {
       portScanConfigMessage.textContent = safeText(res.data?.enabled)
-        ? '全域 Port 掃描已啟用，Probe 會掃描本機指定 ports。'
+        ? '全域 Port 掃描已啟用，Probe 會掃描各服務主機的指定 ports。'
         : '全域 Port 掃描目前未啟用。';
     }
     if (typeof onProgress === 'function') onProgress(100);
@@ -799,7 +805,7 @@ async function handleSavePortScanConfig(event) {
     applyPortScanConfig(res.data || {});
     if (portScanConfigMessage) {
       portScanConfigMessage.textContent = safeText(res.data?.enabled)
-        ? '全域 Port 掃描設定已儲存，Probe 下次執行時會掃描本機 ports。'
+        ? '全域 Port 掃描設定已儲存，Probe 下次執行時會掃描各服務主機 ports。'
         : '全域 Port 掃描已停用。';
     }
   } catch (err) {
@@ -810,6 +816,38 @@ async function handleSavePortScanConfig(event) {
 async function handleReloadPortScanConfigWithOverlay() {
   await runTransientLoading('正在重新載入 Port 掃描設定...', async (progress) => {
     await loadPortScanConfig(progress);
+  });
+}
+
+async function handleRequestPortScanWithOverlay() {
+  await runTransientLoading('正在通知 Probe 重新掃描 Port...', async (progress) => {
+    progress(14);
+    const res = await apiPost({
+      action: 'requestPortScanSignal',
+      requested_by: 'admin',
+      note: 'manual port scan request'
+    }, 120000);
+    if (!res || res.ok === false) throw new Error(res?.error || 'requestPortScanSignal failed');
+
+    const onlineProbeCount = Math.max(0, Number(res.online_probe_count || 0) || 0);
+    progress(34);
+
+    if (onlineProbeCount > 0) {
+      await animateProgressDuringWait(9500, progress, 34, 84);
+    } else {
+      progress(84);
+    }
+
+    await Promise.allSettled([
+      loadProbes((p) => progress(84 + p * 0.08)),
+      loadServices((p) => progress(92 + p * 0.08))
+    ]);
+
+    if (portScanConfigMessage) {
+      portScanConfigMessage.textContent = onlineProbeCount > 0
+        ? `已通知 ${onlineProbeCount} 個上線中的 Probe 重新掃描各服務主機 Port。`
+        : '目前沒有上線中的 Probe，可先確認 Probe 視窗是否在線。';
+    }
   });
 }
 
@@ -1148,6 +1186,7 @@ if (reloadReportBtn) reloadReportBtn.addEventListener('click', handleReloadRepor
 if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendReportNow);
 if (portScanConfigForm) portScanConfigForm.addEventListener('submit', handleSavePortScanConfig);
 if (reloadPortScanConfigBtn) reloadPortScanConfigBtn.addEventListener('click', handleReloadPortScanConfigWithOverlay);
+if (triggerPortScanBtn) triggerPortScanBtn.addEventListener('click', handleRequestPortScanWithOverlay);
 if (deleteTestDataForm) deleteTestDataForm.addEventListener('submit', handleDeleteTestData);
 if (reloadDeleteDatesBtn) reloadDeleteDatesBtn.addEventListener('click', handleReloadDeleteDatesWithOverlay);
 
