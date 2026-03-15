@@ -260,11 +260,7 @@ async function handleTableClick(event) {
     }
 
     if (action === 'refresh') {
-      adminMessage.textContent = '正在執行單筆檢查...';
-      const res = await apiPost({ action: 'refreshServiceNow', id: serviceId, request_probe: true, requested_by: 'admin' }, 120000);
-      if (!res || res.ok === false) throw new Error(res?.error || 'refreshServiceNow failed');
-      await Promise.allSettled([loadServices(), loadProbes()]);
-      adminMessage.textContent = '單筆檢查已完成。';
+      await handleSingleServiceRefreshWithOverlay(serviceId, safeText(btn.dataset.name || '服務'));
       return;
     }
 
@@ -287,6 +283,50 @@ async function handleTableClick(event) {
   } catch (err) {
     adminMessage.textContent = `操作失敗: ${safeText(err.message)}`;
   }
+}
+
+async function animateProgressDuringWait(waitMs, progress, startPercent, endPercent) {
+  const startedAt = Date.now();
+  await new Promise((resolve) => {
+    const tick = () => {
+      const elapsed = Date.now() - startedAt;
+      const ratio = Math.max(0, Math.min(1, elapsed / waitMs));
+      progress(startPercent + (endPercent - startPercent) * ratio);
+      if (ratio >= 1) {
+        resolve();
+        return;
+      }
+      window.setTimeout(tick, 220);
+    };
+    tick();
+  });
+}
+
+async function handleSingleServiceRefreshWithOverlay(serviceId, serviceName) {
+  const labelName = safeText(serviceName || serviceId || '服務');
+  await runTransientLoading(`正在重新檢查 ${labelName}...`, async (progress) => {
+    progress(14);
+    const res = await apiPost({ action: 'refreshServiceNow', id: serviceId, request_probe: true, requested_by: 'admin' }, 120000);
+    if (!res || res.ok === false) throw new Error(res?.error || 'refreshServiceNow failed');
+
+    const data = res.data || {};
+    const probeRequested = !!data.probe_requested;
+
+    progress(28);
+    await Promise.allSettled([
+      loadServices((p) => progress(28 + p * 0.28)),
+      loadProbes((p) => progress(56 + p * 0.16))
+    ]);
+
+    if (probeRequested) {
+      await animateProgressDuringWait(6500, progress, 72, 88);
+      await Promise.allSettled([
+        loadServices((p) => progress(88 + p * 0.08)),
+        loadProbes((p) => progress(96 + p * 0.03))
+      ]);
+    }
+  });
+  adminMessage.textContent = `已完成 ${labelName} 的重新檢查。`;
 }
 
 async function handleReloadWithOverlay() {
