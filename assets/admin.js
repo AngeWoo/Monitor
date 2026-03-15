@@ -1,4 +1,4 @@
-import { apiGet, apiPost, safeText, loadHostBadge, fmtDate, serviceCheckModeBadge, serviceCheckModeDetail } from './common.js?v=20260314-a018';
+﻿import { apiGet, apiPost, safeText, escapeHtml as escapeHtmlText, loadHostBadge, fmtDate, serviceCheckModeBadge, serviceCheckModeDetail } from './common.js?v=20260315-a041';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
@@ -38,6 +38,272 @@ let firstLoadPending = true;
 let deleteProgressTimer = null;
 let deleteProgressValue = 0;
 const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
+
+function normalizeService(rawService) {
+  const service = Object.assign({}, serviceDefaults(), rawService || {});
+  service.id = safeText(service.id || '');
+  service.name = safeText(service.name || service.url || '');
+  service.url = safeText(service.url || '').trim();
+  service.check_type = safeText(service.check_type || 'status_code').trim() || 'status_code';
+  service.interval_min = Math.max(1, Number(service.interval_min || 5) || 5);
+  service.max_redirects = Math.max(0, Math.min(10, Number(service.max_redirects || 5) || 5));
+  service.latency_warn_ms = Math.max(0, Number(service.latency_warn_ms || 5000) || 5000);
+  service.fail_threshold = Math.max(1, Number(service.fail_threshold || 2) || 2);
+  service.retry_count = Math.max(1, Math.min(5, Number(service.retry_count || 2) || 2));
+  service.retry_delay_ms = Math.max(0, Math.min(10000, Number(service.retry_delay_ms || 1200) || 1200));
+  return service;
+}
+
+function statusDot(status) {
+  const value = String(status || '').toUpperCase();
+  const cls = value === 'UP' || value === 'UP-'
+    ? 'dot-up'
+    : value
+      ? 'dot-down'
+      : 'dot-unknown';
+  return `<span class="status-dot ${cls}" aria-hidden="true"></span>`;
+}
+
+function probeOnlineStateDisplay(probe) {
+  const lastSeenAt = probe && probe.last_seen_at ? new Date(probe.last_seen_at) : null;
+  const validSeenAt = lastSeenAt && !Number.isNaN(lastSeenAt.getTime()) ? lastSeenAt : null;
+  const online = !!validSeenAt && (Date.now() - validSeenAt.getTime() <= PROBE_ONLINE_WINDOW_MS);
+  return {
+    online,
+    label: online ? 'Online' : 'Offline'
+  };
+}
+
+function renderServices() {
+  if (!adminBody) return;
+  if (!services.length) {
+    adminBody.innerHTML = '<p class="message">目前沒有服務資料。</p>';
+    return;
+  }
+  adminBody.innerHTML = services.map((service) => rowTemplate(service)).join('');
+}
+
+function renderProbes() {
+  if (!probesBody) return;
+  if (!probes.length) {
+    probesBody.innerHTML = '<p class="message">目前沒有 Probe 節點。</p>';
+    return;
+  }
+  probesBody.innerHTML = probes.map((probe) => probeCompactTemplateV2(probe)).join('');
+}
+
+async function loadServices(onProgress) {
+  if (typeof onProgress === 'function') onProgress(12);
+  const res = await apiGet({ action: 'listServices' }, 120000);
+  if (!res || res.ok === false) throw new Error(res?.error || 'listServices failed');
+  if (typeof onProgress === 'function') onProgress(72);
+  services = Array.isArray(res.data) ? res.data.map(normalizeService) : [];
+  renderServices();
+  if (adminMessage) adminMessage.textContent = `已載入 ${services.length} 筆服務設定。`;
+  if (typeof onProgress === 'function') onProgress(100);
+  return services;
+}
+
+async function loadProbes(onProgress) {
+  if (typeof onProgress === 'function') onProgress(12);
+  const res = await apiGet({ action: 'listProbes' }, 120000);
+  if (!res || res.ok === false) throw new Error(res?.error || 'listProbes failed');
+  if (typeof onProgress === 'function') onProgress(72);
+  probes = Array.isArray(res.data) ? res.data : [];
+  renderProbes();
+  if (probesMessage) probesMessage.textContent = probes.length
+    ? `已載入 ${probes.length} 個 Probe 節點。`
+    : '目前沒有 Probe 節點。';
+  if (typeof onProgress === 'function') onProgress(100);
+  return probes;
+}
+
+function resetAddFormDefaults() {
+  if (!addForm) return;
+  addForm.reset();
+  const defaults = serviceDefaults();
+  addForm.elements.name.value = '';
+  addForm.elements.url.value = '';
+  addForm.elements.interval_min.value = defaults.interval_min;
+  addForm.elements.check_type.value = defaults.check_type;
+  addForm.elements.expected_keyword.value = defaults.expected_keyword;
+  addForm.elements.forbidden_keyword.value = defaults.forbidden_keyword;
+  addForm.elements.expected_final_url.value = defaults.expected_final_url;
+  addForm.elements.secondary_url.value = defaults.secondary_url;
+  addForm.elements.allow_redirects.checked = defaults.allow_redirects;
+  addForm.elements.max_redirects.value = defaults.max_redirects;
+  addForm.elements.latency_warn_ms.value = defaults.latency_warn_ms;
+  addForm.elements.fail_threshold.value = defaults.fail_threshold;
+  addForm.elements.retry_count.value = defaults.retry_count;
+  addForm.elements.retry_delay_ms.value = defaults.retry_delay_ms;
+}
+
+function startDeleteProgress() {
+  deleteProgressValue = 12;
+  if (deleteProgressWrap) deleteProgressWrap.classList.remove('hidden');
+  if (deleteProgressBar) deleteProgressBar.style.width = `${deleteProgressValue}%`;
+  if (deleteProgressPct) deleteProgressPct.textContent = `${deleteProgressValue}%`;
+  if (deleteTestDataSubmitBtn) deleteTestDataSubmitBtn.disabled = true;
+  if (deleteProgressTimer) window.clearInterval(deleteProgressTimer);
+  deleteProgressTimer = window.setInterval(() => {
+    deleteProgressValue = Math.min(92, deleteProgressValue + 7);
+    if (deleteProgressBar) deleteProgressBar.style.width = `${deleteProgressValue}%`;
+    if (deleteProgressPct) deleteProgressPct.textContent = `${deleteProgressValue}%`;
+  }, 260);
+}
+
+function finishDeleteProgress(success) {
+  if (deleteProgressTimer) {
+    window.clearInterval(deleteProgressTimer);
+    deleteProgressTimer = null;
+  }
+  deleteProgressValue = success ? 100 : 0;
+  if (deleteProgressBar) deleteProgressBar.style.width = `${deleteProgressValue}%`;
+  if (deleteProgressPct) deleteProgressPct.textContent = `${deleteProgressValue}%`;
+  if (deleteTestDataSubmitBtn) deleteTestDataSubmitBtn.disabled = false;
+  window.setTimeout(() => {
+    if (deleteProgressWrap) deleteProgressWrap.classList.add('hidden');
+    if (deleteProgressBar) deleteProgressBar.style.width = '0%';
+    if (deleteProgressPct) deleteProgressPct.textContent = '0%';
+  }, success ? 480 : 180);
+}
+
+function collectServicePayload(card, serviceId) {
+  const payload = { action: 'updateService', id: serviceId };
+  const fields = card.querySelectorAll('[data-field][data-id]');
+  fields.forEach((field) => {
+    if (String(field.dataset.id || '') !== serviceId) return;
+    const key = String(field.dataset.field || '').trim();
+    if (!key) return;
+    if (field.type === 'checkbox') {
+      payload[key] = field.checked;
+      return;
+    }
+    const rawValue = safeText(field.value).trim();
+    if (['interval_min', 'max_redirects', 'latency_warn_ms', 'fail_threshold', 'retry_count', 'retry_delay_ms'].includes(key)) {
+      payload[key] = Number(rawValue || 0);
+      return;
+    }
+    payload[key] = rawValue;
+  });
+  return payload;
+}
+
+async function handleAdd(event) {
+  event.preventDefault();
+  if (!addForm) return;
+  addMessage.textContent = '正在新增服務...';
+  const payload = {
+    action: 'addService',
+    name: addForm.elements.name.value.trim(),
+    url: addForm.elements.url.value.trim(),
+    interval_min: Number(addForm.elements.interval_min.value || 5),
+    check_type: addForm.elements.check_type.value,
+    expected_keyword: addForm.elements.expected_keyword.value.trim(),
+    forbidden_keyword: addForm.elements.forbidden_keyword.value.trim(),
+    expected_final_url: addForm.elements.expected_final_url.value.trim(),
+    secondary_url: addForm.elements.secondary_url.value.trim(),
+    allow_redirects: addForm.elements.allow_redirects.checked,
+    max_redirects: Number(addForm.elements.max_redirects.value || 5),
+    latency_warn_ms: Number(addForm.elements.latency_warn_ms.value || 5000),
+    fail_threshold: Number(addForm.elements.fail_threshold.value || 2),
+    retry_count: Number(addForm.elements.retry_count.value || 2),
+    retry_delay_ms: Number(addForm.elements.retry_delay_ms.value || 1200)
+  };
+
+  try {
+    const res = await apiPost(payload, 120000);
+    if (!res || res.ok === false) throw new Error(res?.error || 'addService failed');
+    resetAddFormDefaults();
+    await loadServices();
+    addMessage.textContent = '服務已新增。';
+  } catch (err) {
+    addMessage.textContent = `新增服務失敗: ${safeText(err.message)}`;
+  }
+}
+
+async function handleTableClick(event) {
+  const btn = event.target.closest('button[data-action][data-id]');
+  if (!btn) return;
+
+  const action = String(btn.dataset.action || '').trim();
+  const serviceId = String(btn.dataset.id || '').trim();
+  const card = btn.closest('.service-card');
+  if (!action || !serviceId || !card) return;
+
+  try {
+    if (action === 'save') {
+      adminMessage.textContent = '正在儲存服務設定...';
+      const res = await apiPost(collectServicePayload(card, serviceId), 120000);
+      if (!res || res.ok === false) throw new Error(res?.error || 'updateService failed');
+      await loadServices();
+      adminMessage.textContent = '服務設定已更新。';
+      return;
+    }
+
+    if (action === 'refresh') {
+      adminMessage.textContent = '正在執行單筆檢查...';
+      const res = await apiPost({ action: 'refreshServiceNow', id: serviceId, request_probe: true, requested_by: 'admin' }, 120000);
+      if (!res || res.ok === false) throw new Error(res?.error || 'refreshServiceNow failed');
+      await Promise.allSettled([loadServices(), loadProbes()]);
+      adminMessage.textContent = '單筆檢查已完成。';
+      return;
+    }
+
+    if (action === 'disable') {
+      const res = await apiPost({ action: 'updateService', id: serviceId, enabled: false }, 120000);
+      if (!res || res.ok === false) throw new Error(res?.error || 'disable service failed');
+      await loadServices();
+      adminMessage.textContent = '服務已停用。';
+      return;
+    }
+
+    if (action === 'remove') {
+      const serviceName = safeText(btn.dataset.name || serviceId);
+      if (!window.confirm(`確定要永久刪除 ${serviceName}？`)) return;
+      const res = await apiPost({ action: 'hardDeleteService', id: serviceId }, 120000);
+      if (!res || res.ok === false) throw new Error(res?.error || 'hardDeleteService failed');
+      await loadServices();
+      adminMessage.textContent = '服務已刪除。';
+    }
+  } catch (err) {
+    adminMessage.textContent = `操作失敗: ${safeText(err.message)}`;
+  }
+}
+
+async function handleReloadWithOverlay() {
+  await runTransientLoading('正在重新載入管理資料...', async (progress) => {
+    await Promise.allSettled([
+      loadServices((p) => progress(Math.min(62, p * 0.62))),
+      loadProbes((p) => progress(62 + p * 0.22)),
+      loadReportConfig((p) => progress(84 + p * 0.16))
+    ]);
+  });
+}
+
+async function handleRunNowWithOverlay() {
+  await runTransientLoading('正在執行檢查...', async () => {
+    await handleRunNow();
+  });
+}
+
+async function handleReloadReportWithOverlay() {
+  await runTransientLoading('正在重新載入報表設定...', async (progress) => {
+    await loadReportConfig(progress);
+  });
+}
+
+async function handleReloadDeleteDatesWithOverlay() {
+  await runTransientLoading('正在重新載入可刪除日期...', async (progress) => {
+    await loadChecksDates(true, progress);
+  });
+}
+
+async function handleReloadProbes() {
+  await runTransientLoading('正在重新載入 Probe 狀態...', async (progress) => {
+    await loadProbes(progress);
+  });
+}
 
 function serviceDefaults() {
   return {
@@ -84,6 +350,13 @@ function setLoadingProgress(percent, label) {
   if (loadingLabel && label) loadingLabel.textContent = label;
 }
 
+function finishFirstLoadOverlay(label, progress = 100) {
+  if (!firstLoadPending) return;
+  setLoadingProgress(progress, label);
+  firstLoadPending = false;
+  window.setTimeout(() => setLoadingOverlay(false), 220);
+}
+
 async function runTransientLoading(label, task) {
   const startedAt = Date.now();
   setLoadingOverlay(true);
@@ -123,173 +396,42 @@ function clearChecksDatesCache() {
   try { localStorage.removeItem(DATES_CACHE_KEY); } catch (_) {}
 }
 
-function populateDateSelect(dates) {
+populateDateSelect = function populateDateSelectSafe(dates) {
   if (!deleteTestDataDateSelect) return;
-  deleteTestDataDateSelect.innerHTML = dates.length
-    ? '<option value="">-- 請選擇日期 --</option>' + dates.map((date) => `<option value="${safeText(date)}">${safeText(date)}</option>`).join('')
-    : '<option value="">目前沒有資料</option>';
-}
+  const list = Array.isArray(dates) ? dates : [];
+  const options = list.map((date) => `<option value="${escapeAttr(date)}">${escapeHtmlText(date)}</option>`).join('');
+  deleteTestDataDateSelect.innerHTML = list.length
+    ? '<option value="">-- Select a date --</option>' + options
+    : '<option value="">No dates available</option>';
+};
 
-function setDeleteProgressUI(percent) {
-  if (deleteProgressBar) deleteProgressBar.style.width = `${percent}%`;
-  if (deleteProgressPct) deleteProgressPct.textContent = `${percent}%`;
-}
-
-function startDeleteProgress() {
-  deleteProgressValue = 0;
-  setDeleteProgressUI(0);
-  if (deleteProgressWrap) deleteProgressWrap.classList.remove('hidden');
-  if (deleteTestDataSubmitBtn) deleteTestDataSubmitBtn.disabled = true;
-  if (deleteTestDataMessage) deleteTestDataMessage.textContent = '';
-  deleteProgressTimer = window.setInterval(() => {
-    deleteProgressValue += (82 - deleteProgressValue) * 0.07;
-    setDeleteProgressUI(Math.min(82, Math.round(deleteProgressValue)));
-  }, 400);
-}
-
-function finishDeleteProgress(success) {
-  if (deleteProgressTimer) {
-    window.clearInterval(deleteProgressTimer);
-    deleteProgressTimer = null;
-  }
-  if (deleteTestDataSubmitBtn) deleteTestDataSubmitBtn.disabled = false;
-  if (success) {
-    setDeleteProgressUI(100);
-    window.setTimeout(() => {
-      if (deleteProgressWrap) deleteProgressWrap.classList.add('hidden');
-    }, 900);
-  } else {
-    if (deleteProgressWrap) deleteProgressWrap.classList.add('hidden');
-    setDeleteProgressUI(0);
-  }
-}
-
-function statusDot(status) {
-  const value = String(status || '').toUpperCase();
-  if (value === 'UP') return '<span class="status-dot dot-up" title="UP"></span>';
-  if (value === 'UP-') return '<span class="status-dot dot-unknown" title="UP-"></span>';
-  if (value === 'SLOW' || value === 'UNSTABLE') return '<span class="status-dot dot-unknown" title="UNSTABLE"></span>';
-  if (value) return '<span class="status-dot dot-down" title="DOWN"></span>';
-  return '<span class="status-dot dot-unknown" title="UNKNOWN"></span>';
-}
-
-function normalizeService(service) {
-  return { ...serviceDefaults(), ...service };
-}
-
-function probeOnlineState(probe) {
-  const lastSeen = probe && probe.last_seen_at ? new Date(probe.last_seen_at) : null;
-  if (!lastSeen || Number.isNaN(lastSeen.getTime())) return { online: false, label: '離線' };
-  return (Date.now() - lastSeen.getTime()) <= PROBE_ONLINE_WINDOW_MS
-    ? { online: true, label: '在線' }
-    : { online: false, label: '離線' };
-}
-
-function probeTemplate(probe) {
+probeCompactTemplateV2 = function probeCompactTemplateV2Safe(probe) {
   const state = probeOnlineStateDisplay(probe);
   const statusClass = state.online ? 'probe-online' : 'probe-offline';
-  return `
-    <article class="probe-card">
-      <div class="probe-card-header">
-        <div>
-          <strong>${safeText(probe.probe_name) || safeText(probe.probe_id) || '(未命名 Probe)'}</strong>
-          <div class="probe-card-subtitle">${safeText(probe.host_name) || '-'} | ${safeText(probe.platform) || '-'} ${safeText(probe.platform_release) || ''}</div>
-        </div>
-        <div class="probe-card-side-actions"><span class="probe-status-badge ${statusClass}">${state.label}</span><div class="probe-card-actions"><button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${safeText(probe.probe_id)}">離線</button><button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${safeText(probe.probe_id)}">清理</button></div></div>
-      </div>
-      <div class="probe-card-grid">
-        <div><span>Probe ID</span><strong>${safeText(probe.probe_id) || '-'}</strong></div>
-        <div><span>最後心跳</span><strong>${fmtDate(probe.last_seen_at)}</strong></div>
-        <div><span>最後執行</span><strong>${fmtDate(probe.last_run_finished_at || probe.last_run_started_at)}</strong></div>
-        <div><span>最後狀態</span><strong>${safeText(probe.last_run_status) || '-'}</strong></div>
-        <div><span>結果數</span><strong>${safeText(probe.last_result_count) || '0'}</strong></div>
-        <div><span>DOWN 數</span><strong>${safeText(probe.last_down_count) || '0'}</strong></div>
-        <div class="probe-wide"><span>版本</span><strong>${safeText(probe.probe_version) || '-'}${probe.app_version ? ` / App ${safeText(probe.app_version)}` : ''}</strong></div>
-        <div class="probe-wide"><span>最近摘要</span><strong class="log-cell-wrap">${safeText(probe.last_status_summary) || '-'}</strong></div>
-        <div class="probe-wide"><span>最近錯誤</span><strong class="log-cell-wrap">${safeText(probe.last_run_error) || '-'}</strong></div>
-      </div>
-      <div class="probe-card-actions">
-        <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${safeText(probe.probe_id)}">立即標記離線</button>
-        <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${safeText(probe.probe_id)}">清理 Probe 狀態</button>
-      </div>
-    </article>
-  `;
-}
-
-function probeOnlineStateDisplay(probe) {
-  const runStatus = String((probe && probe.last_run_status) || '').toUpperCase();
-  if (runStatus === 'OFFLINE' || runStatus === 'STOPPED' || runStatus === 'CLOSED') {
-    return { online: false, label: '離線' };
-  }
-  const base = probeOnlineState(probe);
-  return {
-    online: !!base.online,
-    label: base.online ? '在線' : '離線'
-  };
-}
-
-function probeCompactTemplate(probe) {
-  const state = probeOnlineStateDisplay(probe);
-  const statusClass = state.online ? 'probe-online' : 'probe-offline';
-  const summaryText = safeText(probe.last_status_summary) || '-';
-  const errorText = safeText(probe.last_run_error) || '';
-  const versionText = safeText(probe.probe_version) || '-';
-  const appVersionText = probe.app_version ? ` / App ${safeText(probe.app_version)}` : '';
-  return `
-    <article class="probe-card probe-card-compact">
-      <div class="probe-card-header">
-        <div>
-          <strong>${safeText(probe.probe_name) || safeText(probe.probe_id) || '(Probe)'}</strong>
-          <div class="probe-card-subtitle">${safeText(probe.host_name) || '-'} | ${safeText(probe.platform) || '-'} ${safeText(probe.platform_release) || ''}</div>
-        </div>
-        <span class="probe-status-badge ${statusClass}">${state.label}</span>
-      </div>
-      <div class="probe-compact-kpis">
-        <div class="probe-compact-kpi"><span>Probe ID</span><strong>${safeText(probe.probe_id) || '-'}</strong></div>
-        <div class="probe-compact-kpi"><span>Status</span><strong>${safeText(probe.last_run_status) || '-'}</strong></div>
-        <div class="probe-compact-kpi"><span>Result / DOWN</span><strong>${safeText(probe.last_result_count) || '0'} / ${safeText(probe.last_down_count) || '0'}</strong></div>
-        <div class="probe-compact-kpi"><span>Last seen</span><strong>${fmtDate(probe.last_seen_at)}</strong></div>
-      </div>
-      <div class="probe-compact-lines">
-        <div class="probe-compact-line"><span>Last run</span><strong>${fmtDate(probe.last_run_finished_at || probe.last_run_started_at)}</strong></div>
-        <div class="probe-compact-line"><span>Version</span><strong>${versionText}${appVersionText}</strong></div>
-        <div class="probe-compact-line probe-compact-line-wide"><span>Summary</span><strong class="log-cell-wrap">${summaryText}</strong></div>
-        ${errorText && errorText !== '-' ? `<div class="probe-compact-line probe-compact-line-wide probe-compact-error"><span>Error</span><strong class="log-cell-wrap">${errorText}</strong></div>` : ''}
-      </div>
-      <div class="probe-card-actions">
-        <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${safeText(probe.probe_id)}">立即離線</button>
-        <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${safeText(probe.probe_id)}">清理狀態</button>
-      </div>
-    </article>
-  `;
-}
-
-function probeCompactTemplateV2(probe) {
-  const state = probeOnlineStateDisplay(probe);
-  const statusClass = state.online ? 'probe-online' : 'probe-offline';
-  const summaryText = safeText(probe.last_status_summary) || '-';
-  const errorText = safeText(probe.last_run_error) || '';
-  const versionText = safeText(probe.probe_version) || '-';
-  const appVersionText = probe.app_version ? ` / App ${safeText(probe.app_version)}` : '';
+  const probeId = escapeAttr(probe.probe_id);
+  const summaryText = escapeHtmlText(safeText(probe.last_status_summary) || '-');
+  const errorText = escapeHtmlText(safeText(probe.last_run_error) || '');
+  const versionText = escapeHtmlText(safeText(probe.probe_version) || '-');
+  const appVersionText = probe.app_version ? ` / App ${escapeHtmlText(probe.app_version)}` : '';
   return `
     <article class="probe-card probe-card-compact probe-card-compact-v2">
       <div class="probe-card-header">
         <div>
-          <strong>${safeText(probe.probe_name) || safeText(probe.probe_id) || '(Probe)'}</strong>
-          <div class="probe-card-subtitle">${safeText(probe.host_name) || '-'} | ${safeText(probe.platform) || '-'} ${safeText(probe.platform_release) || ''}</div>
+          <strong>${escapeHtmlText(safeText(probe.probe_name) || safeText(probe.probe_id) || '(Probe)')}</strong>
+          <div class="probe-card-subtitle">${escapeHtmlText(safeText(probe.host_name) || '-')} | ${escapeHtmlText(safeText(probe.platform) || '-')} ${escapeHtmlText(safeText(probe.platform_release) || '')}</div>
         </div>
         <div class="probe-card-side-actions">
           <span class="probe-status-badge ${statusClass}">${state.label}</span>
           <div class="probe-card-actions">
-            <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${safeText(probe.probe_id)}">離線</button>
-            <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${safeText(probe.probe_id)}">清理</button>
+            <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${probeId}">Mark offline</button>
+            <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${probeId}">Clear state</button>
           </div>
         </div>
       </div>
       <div class="probe-compact-grid-six">
-        <div class="probe-compact-kpi"><span>Probe ID</span><strong>${safeText(probe.probe_id) || '-'}</strong></div>
-        <div class="probe-compact-kpi"><span>Status</span><strong>${safeText(probe.last_run_status) || '-'}</strong></div>
-        <div class="probe-compact-kpi"><span>Result / DOWN</span><strong>${safeText(probe.last_result_count) || '0'} / ${safeText(probe.last_down_count) || '0'}</strong></div>
+        <div class="probe-compact-kpi"><span>Probe ID</span><strong>${escapeHtmlText(safeText(probe.probe_id) || '-')}</strong></div>
+        <div class="probe-compact-kpi"><span>Status</span><strong>${escapeHtmlText(safeText(probe.last_run_status) || '-')}</strong></div>
+        <div class="probe-compact-kpi"><span>Result / DOWN</span><strong>${escapeHtmlText(safeText(probe.last_result_count) || '0')} / ${escapeHtmlText(safeText(probe.last_down_count) || '0')}</strong></div>
         <div class="probe-compact-kpi"><span>Last seen</span><strong>${fmtDate(probe.last_seen_at)}</strong></div>
         <div class="probe-compact-kpi"><span>Last run</span><strong>${fmtDate(probe.last_run_finished_at || probe.last_run_started_at)}</strong></div>
         <div class="probe-compact-kpi"><span>Version</span><strong>${versionText}${appVersionText}</strong></div>
@@ -300,308 +442,127 @@ function probeCompactTemplateV2(probe) {
       </div>
     </article>
   `;
-}
+};
 
-function renderProbes() {
-  if (!probesBody) return;
-  if (!probes.length) {
-    probesBody.innerHTML = '<div class="service-empty">目前沒有 Probe</div>';
-    return;
-  }
-  probesBody.innerHTML = probes.map(probeCompactTemplateV2).join('');
-}
-
-function rowTemplate(rawService) {
+rowTemplate = function rowTemplateSafe(rawService) {
   const service = normalizeService(rawService);
   const enabled = isEnabled(service.enabled);
   const allowRedirects = isEnabled(service.allow_redirects);
   const gasStatusLabel = safeText(service.gas_status) || safeText(service.last_status) || '-';
-  const probeStatusLabel = safeText(service.probe_status) || (service.check_mode === 'dual_pending' ? '待同步' : '-');
-
+  const probeStatusLabel = safeText(service.probe_status) || (service.check_mode === 'dual_pending' ? 'Pending' : '-');
+  const serviceId = escapeAttr(service.id);
   const cardToneClass = String(service.last_status || '').toUpperCase() === 'UNSTABLE' ? ' service-card-warn' : '';
 
   return `
     <article class="service-card${cardToneClass}">
       <div class="service-card-header">
         <div class="service-card-title">
-          <span class="name-cell">${statusDot(service.last_status)}<strong>${safeText(service.name) || '(未命名服務)'}</strong></span>
-          <span class="service-card-url">${safeText(service.url) || '-'}</span>
-          <span class="service-check-mode-line">${serviceCheckModeBadge(service)}<span class="service-check-mode-detail">${safeText(serviceCheckModeDetail(service))}</span></span>
+          <span class="name-cell">${statusDot(service.last_status)}<strong>${escapeHtmlText(safeText(service.name) || '(Unnamed Service)')}</strong></span>
+          <span class="service-card-url">${escapeHtmlText(safeText(service.url) || '-')}</span>
+          <span class="service-check-mode-line">${serviceCheckModeBadge(service)}<span class="service-check-mode-detail">${escapeHtmlText(safeText(serviceCheckModeDetail(service)))}</span></span>
         </div>
         <div class="service-card-side">
-          <span class="service-card-status">${safeText(service.last_status) || '-'}</span>
-          <span class="service-card-meta">HTTP ${safeText(service.last_http_code) || '-'} | ${safeText(service.last_error_type) || '-'} | Fail Streak ${safeText(service.consecutive_failures) || '0'}</span>
+          <span class="service-card-status">${escapeHtmlText(safeText(service.last_status) || '-')}</span>
+          <span class="service-card-meta">HTTP ${escapeHtmlText(safeText(service.last_http_code) || '-')} | ${escapeHtmlText(safeText(service.last_error_type) || '-')} | Fail Streak ${escapeHtmlText(safeText(service.consecutive_failures) || '0')}</span>
         </div>
       </div>
 
       <div class="service-card-body service-card-body-compact">
         <div class="service-main-grid">
           <label class="span-2">
-            服務名稱
-            <input data-field="name" data-id="${safeText(service.id)}" value="${escapeAttr(service.name)}" />
+            Name
+            <input data-field="name" data-id="${serviceId}" value="${escapeAttr(service.name)}" />
           </label>
           <label class="span-1">
-            間隔(分)
-            <input data-field="interval_min" data-id="${safeText(service.id)}" type="number" min="1" max="1440" value="${escapeAttr(service.interval_min || 5)}" />
+            Interval (min)
+            <input data-field="interval_min" data-id="${serviceId}" type="number" min="1" max="1440" value="${escapeAttr(service.interval_min || 5)}" />
           </label>
           <label class="span-1">
-            檢測方式
-            <select data-field="check_type" data-id="${safeText(service.id)}">
-              <option value="status_code" ${service.check_type === 'status_code' ? 'selected' : ''}>HTTP 狀態碼</option>
-              <option value="keyword" ${service.check_type === 'keyword' ? 'selected' : ''}>關鍵字驗證</option>
+            Check type
+            <select data-field="check_type" data-id="${serviceId}">
+              <option value="status_code" ${service.check_type === 'status_code' ? 'selected' : ''}>HTTP status</option>
+              <option value="keyword" ${service.check_type === 'keyword' ? 'selected' : ''}>Keyword</option>
             </select>
           </label>
           <label class="span-3">
             URL
-            <input data-field="url" data-id="${safeText(service.id)}" value="${escapeAttr(service.url)}" />
+            <input data-field="url" data-id="${serviceId}" value="${escapeAttr(service.url)}" />
           </label>
           <label class="check-item service-inline-check span-1">
-            <input data-field="enabled" data-id="${safeText(service.id)}" type="checkbox" ${enabled ? 'checked' : ''} />
-            <span>啟用服務</span>
+            <input data-field="enabled" data-id="${serviceId}" type="checkbox" ${enabled ? 'checked' : ''} />
+            <span>Enabled</span>
           </label>
         </div>
 
         <div class="service-result-strip">
-          <div class="service-result-item"><span>測試模式</span><strong>${safeText(service.check_mode_label) || '單一測試'}</strong></div>
-          <div class="service-result-item"><span>狀態</span><strong>${safeText(service.last_status) || '-'}</strong></div>
-          <div class="service-result-item"><span>GAS 狀態</span><strong class="service-status-chip">${statusDot(gasStatusLabel)}${gasStatusLabel}</strong></div>
-          <div class="service-result-item"><span>Probe 狀態</span><strong class="service-status-chip">${statusDot(probeStatusLabel)}${probeStatusLabel}</strong></div>
-          <div class="service-result-item"><span>HTTP</span><strong>${safeText(service.last_http_code) || '-'}</strong></div>
-          <div class="service-result-item"><span>Error Type</span><strong>${safeText(service.last_error_type) || '-'}</strong></div>
-          <div class="service-result-item"><span>連續失敗</span><strong>${safeText(service.consecutive_failures) || '0'}</strong></div>
-          <div class="service-result-item service-result-item-wide"><span>Error 訊息</span><strong class="log-cell-wrap">${safeText(service.last_error) || '-'}</strong></div>
+          <div class="service-result-item"><span>Mode</span><strong>${escapeHtmlText(safeText(service.check_mode_label) || 'Unknown')}</strong></div>
+          <div class="service-result-item"><span>Status</span><strong>${escapeHtmlText(safeText(service.last_status) || '-')}</strong></div>
+          <div class="service-result-item"><span>GAS</span><strong class="service-status-chip">${statusDot(gasStatusLabel)}${escapeHtmlText(gasStatusLabel)}</strong></div>
+          <div class="service-result-item"><span>Probe</span><strong class="service-status-chip">${statusDot(probeStatusLabel)}${escapeHtmlText(probeStatusLabel)}</strong></div>
+          <div class="service-result-item"><span>HTTP</span><strong>${escapeHtmlText(safeText(service.last_http_code) || '-')}</strong></div>
+          <div class="service-result-item"><span>Error Type</span><strong>${escapeHtmlText(safeText(service.last_error_type) || '-')}</strong></div>
+          <div class="service-result-item"><span>Fail Streak</span><strong>${escapeHtmlText(safeText(service.consecutive_failures) || '0')}</strong></div>
+          <div class="service-result-item service-result-item-wide"><span>Error</span><strong class="log-cell-wrap">${escapeHtmlText(safeText(service.last_error) || '-')}</strong></div>
         </div>
 
         <details class="service-advanced">
-          <summary>進階檢查設定</summary>
+          <summary>Advanced settings</summary>
           <div class="service-card-grid service-card-grid-compact">
             <label class="span-1">
-              最大跳轉
-              <input data-field="max_redirects" data-id="${safeText(service.id)}" type="number" min="0" max="10" value="${escapeAttr(service.max_redirects)}" />
+              Max redirects
+              <input data-field="max_redirects" data-id="${serviceId}" type="number" min="0" max="10" value="${escapeAttr(service.max_redirects)}" />
             </label>
             <label class="span-1">
-              延遲警戒(ms)
-              <input data-field="latency_warn_ms" data-id="${safeText(service.id)}" type="number" min="0" max="600000" value="${escapeAttr(service.latency_warn_ms)}" />
+              Latency warn (ms)
+              <input data-field="latency_warn_ms" data-id="${serviceId}" type="number" min="0" max="600000" value="${escapeAttr(service.latency_warn_ms)}" />
             </label>
             <label class="span-1">
-              失敗門檻
-              <input data-field="fail_threshold" data-id="${safeText(service.id)}" type="number" min="1" max="10" value="${escapeAttr(service.fail_threshold)}" />
+              Fail threshold
+              <input data-field="fail_threshold" data-id="${serviceId}" type="number" min="1" max="10" value="${escapeAttr(service.fail_threshold)}" />
             </label>
             <label class="span-1">
-              重試次數
-              <input data-field="retry_count" data-id="${safeText(service.id)}" type="number" min="1" max="5" value="${escapeAttr(service.retry_count)}" />
+              Retry count
+              <input data-field="retry_count" data-id="${serviceId}" type="number" min="1" max="5" value="${escapeAttr(service.retry_count)}" />
             </label>
             <label class="span-1">
-              重試間隔(ms)
-              <input data-field="retry_delay_ms" data-id="${safeText(service.id)}" type="number" min="0" max="10000" value="${escapeAttr(service.retry_delay_ms)}" />
+              Retry delay (ms)
+              <input data-field="retry_delay_ms" data-id="${serviceId}" type="number" min="0" max="10000" value="${escapeAttr(service.retry_delay_ms)}" />
             </label>
             <label class="check-item service-inline-check span-1">
-              <input data-field="allow_redirects" data-id="${safeText(service.id)}" type="checkbox" ${allowRedirects ? 'checked' : ''} />
-              <span>允許跳轉</span>
+              <input data-field="allow_redirects" data-id="${serviceId}" type="checkbox" ${allowRedirects ? 'checked' : ''} />
+              <span>Follow redirects</span>
             </label>
             <label class="span-2">
-              必須包含關鍵字
-              <input data-field="expected_keyword" data-id="${safeText(service.id)}" value="${escapeAttr(service.expected_keyword)}" placeholder="留空表示不檢查" />
+              Expected keyword
+              <input data-field="expected_keyword" data-id="${serviceId}" value="${escapeAttr(service.expected_keyword)}" placeholder="Optional keyword that must appear" />
             </label>
             <label class="span-2">
-              不可包含關鍵字
-              <input data-field="forbidden_keyword" data-id="${safeText(service.id)}" value="${escapeAttr(service.forbidden_keyword)}" placeholder="留空表示不檢查" />
+              Forbidden keyword
+              <input data-field="forbidden_keyword" data-id="${serviceId}" value="${escapeAttr(service.forbidden_keyword)}" placeholder="Optional keyword that must not appear" />
             </label>
             <label class="span-2">
-              預期最終網址
-              <input data-field="expected_final_url" data-id="${safeText(service.id)}" value="${escapeAttr(service.expected_final_url)}" placeholder="留空表示不限制最終網址" />
+              Expected final URL
+              <input data-field="expected_final_url" data-id="${serviceId}" value="${escapeAttr(service.expected_final_url)}" placeholder="Optional URL after redirects" />
             </label>
             <label class="span-2">
-              備援/第二入口網址
-              <input data-field="secondary_url" data-id="${safeText(service.id)}" value="${escapeAttr(service.secondary_url)}" placeholder="留空表示只檢查主網址" />
+              Secondary URL
+              <input data-field="secondary_url" data-id="${serviceId}" value="${escapeAttr(service.secondary_url)}" placeholder="Optional fallback or probe URL" />
             </label>
           </div>
         </details>
       </div>
 
       <div class="service-card-actions">
-        <button class="btn tiny" data-action="save" data-id="${safeText(service.id)}">儲存設定</button>
-        <button class="btn tiny secondary" data-action="refresh" data-id="${safeText(service.id)}">立即重測</button>
-        <button class="btn tiny danger" data-action="disable" data-id="${safeText(service.id)}">停用</button>
-        <button class="btn tiny danger" data-action="remove" data-id="${safeText(service.id)}" data-name="${escapeAttr(service.name)}">刪除</button>
+        <button class="btn tiny" data-action="save" data-id="${serviceId}">Save</button>
+        <button class="btn tiny secondary" data-action="refresh" data-id="${serviceId}">Refresh</button>
+        <button class="btn tiny danger" data-action="disable" data-id="${serviceId}">Disable</button>
+        <button class="btn tiny danger" data-action="remove" data-id="${serviceId}" data-name="${escapeAttr(service.name)}">Remove</button>
       </div>
     </article>
   `;
-}
+};
 
-function renderServices() {
-  if (!services.length) {
-    adminBody.innerHTML = '<div class="service-empty">目前沒有服務</div>';
-    return;
-  }
-  adminBody.innerHTML = services.map(rowTemplate).join('');
-}
-
-async function loadServices(onProgress) {
-  adminMessage.textContent = '載入服務中...';
-  const res = await apiGet({ action: 'listServices' });
-  services = (res.data || []).map(normalizeService);
-  renderServices();
-  adminMessage.textContent = '';
-  if (typeof onProgress === 'function') onProgress(100);
-}
-
-async function loadProbes(onProgress) {
-  if (probesMessage) probesMessage.textContent = '載入 Probe 中...';
-  const res = await apiGet({ action: 'listProbes' });
-  probes = Array.isArray(res.data) ? res.data : [];
-  renderProbes();
-  if (probesMessage) probesMessage.textContent = '';
-  if (typeof onProgress === 'function') onProgress(100);
-}
-
-function fieldValue(field) {
-  if (field.type === 'checkbox') return field.checked;
-  if (field.type === 'number') return Number(field.value || 0);
-  return field.value;
-}
-
-function formDataToPayload(id) {
-  const fields = Array.from(adminBody.querySelectorAll(`[data-id="${id}"]`));
-  const payload = { action: 'updateService', id };
-  fields.forEach((field) => {
-    payload[field.dataset.field] = fieldValue(field);
-  });
-  return payload;
-}
-
-function addFormPayload() {
-  const form = new FormData(addForm);
-  return {
-    action: 'addService',
-    name: form.get('name'),
-    url: form.get('url'),
-    interval_min: Number(form.get('interval_min') || 5),
-    check_type: form.get('check_type'),
-    expected_keyword: form.get('expected_keyword'),
-    forbidden_keyword: form.get('forbidden_keyword'),
-    expected_final_url: form.get('expected_final_url'),
-    secondary_url: form.get('secondary_url'),
-    allow_redirects: addForm.elements.allow_redirects.checked,
-    max_redirects: Number(form.get('max_redirects') || 5),
-    latency_warn_ms: Number(form.get('latency_warn_ms') || 5000),
-    fail_threshold: Number(form.get('fail_threshold') || 2),
-    retry_count: Number(form.get('retry_count') || 2),
-    retry_delay_ms: Number(form.get('retry_delay_ms') || 1200)
-  };
-}
-
-function resetAddFormDefaults() {
-  addForm.reset();
-  addForm.elements.interval_min.value = 5;
-  addForm.elements.max_redirects.value = 5;
-  addForm.elements.latency_warn_ms.value = 5000;
-  addForm.elements.fail_threshold.value = 2;
-  addForm.elements.retry_count.value = 2;
-  addForm.elements.retry_delay_ms.value = 1200;
-  addForm.elements.allow_redirects.checked = true;
-}
-
-async function handleAdd(event) {
-  event.preventDefault();
-  addMessage.textContent = '新增中...';
-  try {
-    const res = await apiPost(addFormPayload());
-    if (!res.ok) throw new Error(res.error || 'addService failed');
-    resetAddFormDefaults();
-    addMessage.textContent = '服務已新增';
-    await loadServices();
-  } catch (err) {
-    addMessage.textContent = `新增失敗: ${safeText(err.message)}`;
-  }
-}
-
-async function handleTableClick(event) {
-  const btn = event.target.closest('button[data-action]');
-  if (!btn) return;
-  const { action, id } = btn.dataset;
-
-  try {
-    if (action === 'save') {
-      adminMessage.textContent = '儲存中...';
-      const res = await apiPost(formDataToPayload(id));
-      if (!res.ok) throw new Error(res.error || 'updateService failed');
-      adminMessage.textContent = '設定已更新';
-    } else if (action === 'refresh') {
-      adminMessage.textContent = '重測中...';
-      const res = await apiPost({ action: 'refreshServiceNow', id, request_probe: true, requested_by: 'admin' });
-      if (!res.ok) throw new Error(res.error || 'refreshServiceNow failed');
-      const data = res.data || {};
-      const probeRequested = !!data.probe_requested;
-      adminMessage.textContent = probeRequested
-        ? 'GAS 已完成重測，已通知在線 Probe 立即同步'
-        : 'GAS 已完成重測';
-      await Promise.all([loadServices(), loadProbes()]);
-      if (probeRequested) {
-        window.setTimeout(() => {
-          Promise.all([loadServices(), loadProbes()]).catch(() => {});
-        }, 6500);
-      }
-    } else if (action === 'disable') {
-      adminMessage.textContent = '停用中...';
-      const res = await apiPost({ action: 'deleteService', id });
-      if (!res.ok) throw new Error(res.error || 'deleteService failed');
-      adminMessage.textContent = '服務已停用';
-    } else if (action === 'remove') {
-      const name = btn.dataset.name || id;
-      const confirmed = window.confirm(`確定要永久刪除 ${name} 嗎？這不會清除既有 checks 歷史。`);
-      if (!confirmed) return;
-      adminMessage.textContent = '刪除中...';
-      const res = await apiPost({ action: 'hardDeleteService', id });
-      if (!res.ok) throw new Error(res.error || 'hardDeleteService failed');
-      adminMessage.textContent = '服務已刪除';
-    }
-
-    await loadServices();
-  } catch (err) {
-    adminMessage.textContent = `操作失敗: ${safeText(err.message)}`;
-  }
-}
-
-async function legacyHandleRunNow() {
-  adminMessage.textContent = '執行中...';
-  try {
-    const res = await apiPost({ action: 'runNow' });
-    if (!res.ok) throw new Error(res.error || 'runNow failed');
-    adminMessage.textContent = '已觸發健康檢查';
-    await loadServices();
-  } catch (err) {
-    adminMessage.textContent = `執行失敗: ${safeText(err.message)}`;
-  }
-}
-
-async function handleReloadWithOverlay() {
-  await runTransientLoading('重新整理服務...', async (setP) => {
-    if (setP) setP(25);
-    await loadServices((p) => {
-      if (setP) setP(25 + p * 0.75);
-    });
-  });
-}
-
-async function handleReloadProbes() {
-  await runTransientLoading('重新整理 Probe...', async (setP) => {
-    if (setP) setP(20);
-    await loadProbes((p) => {
-      if (setP) setP(20 + p * 0.8);
-    });
-  });
-}
-
-async function handleRunNowWithOverlay() {
-  await runTransientLoading('執行健康檢查...', async (setP) => {
-    if (setP) setP(20);
-    await handleRunNow();
-    if (setP) setP(100);
-  });
-}
-
-function applyReportConfig(cfg) {
+applyReportConfig = function applyReportConfigSafe(cfg) {
   if (!reportForm) return;
   const rawMode = safeText(cfg.notify_mode || 'mail');
   const notifyMode = rawMode === 'all'
@@ -615,10 +576,20 @@ function applyReportConfig(cfg) {
   reportForm.elements.daily_hour.value = Number.isFinite(Number(cfg.daily_hour)) ? Number(cfg.daily_hour) : 9;
   reportForm.elements.enabled.checked = String(cfg.enabled).toLowerCase() !== 'false';
   reportForm.elements.only_on_issue.checked = String(cfg.only_on_issue).toLowerCase() !== 'false';
-  reportForm.elements.line_channel_access_token.value = safeText(cfg.line_channel_access_token || '');
   reportForm.elements.line_to.value = safeText(cfg.line_to || '');
   reportForm.elements.monitor_label.value = safeText(cfg.monitor_label || '');
-}
+
+  const tokenInput = reportForm.elements.line_channel_access_token;
+  if (tokenInput) {
+    const masked = safeText(cfg.line_channel_access_token_masked || '');
+    tokenInput.value = '';
+    tokenInput.dataset.configured = cfg.line_channel_access_token_configured ? 'true' : 'false';
+    tokenInput.placeholder = masked
+      ? `Configured token (${masked}) - leave blank to keep existing`
+      : 'LINE Messaging API Channel Access Token';
+    tokenInput.autocomplete = 'off';
+  }
+};
 
 async function loadLineTargetSummary() {
   if (!lineUserStats) return;
@@ -627,27 +598,30 @@ async function loadLineTargetSummary() {
     const data = res.data || {};
     lineUserStats.textContent = `Recorded LINE users: ${Number(data.user_count || 0)} / groups: ${Number(data.group_count || 0)} / rooms: ${Number(data.room_count || 0)}`;
   } catch (_) {
-    lineUserStats.textContent = 'Recorded LINE users: -';
+    lineUserStats.textContent = '已記錄 LINE 對象：-';
   }
 }
 
 async function loadReportConfig(onProgress) {
-  reportMessage.textContent = '讀取通知設定中...';
+  if (typeof onProgress === 'function') onProgress(12);
+  reportMessage.textContent = 'Loading report settings...';
   try {
     const res = await apiGet({ action: 'getReportConfig' });
+    if (typeof onProgress === 'function') onProgress(58);
     applyReportConfig(res.data || {});
+    if (typeof onProgress === 'function') onProgress(82);
     await loadLineTargetSummary();
-    reportMessage.textContent = '通知設定已載入';
+    reportMessage.textContent = 'Report settings loaded.';
     if (typeof onProgress === 'function') onProgress(100);
   } catch (err) {
-    reportMessage.textContent = `讀取失敗: ${safeText(err.message)}`;
+    reportMessage.textContent = `Failed to load report settings: ${safeText(err.message)}`;
     if (typeof onProgress === 'function') onProgress(100);
   }
 }
 
 async function handleSaveReport(event) {
   event.preventDefault();
-  reportMessage.textContent = '儲存中...';
+  reportMessage.textContent = 'Saving report settings...';
 
   const payload = {
     action: 'updateReportConfig',
@@ -665,14 +639,16 @@ async function handleSaveReport(event) {
   try {
     const res = await apiPost(payload);
     if (!res.ok) throw new Error(res.error || 'updateReportConfig failed');
-    reportMessage.textContent = '通知設定已儲存';
+    applyReportConfig(res.data || {});
+    await loadLineTargetSummary();
+    reportMessage.textContent = 'Report settings saved.';
   } catch (err) {
-    reportMessage.textContent = `儲存失敗: ${safeText(err.message)}`;
+    reportMessage.textContent = `Failed to save report settings: ${safeText(err.message)}`;
   }
 }
 
 async function handleSendReportNow() {
-  reportMessage.textContent = '寄送測試通知中...';
+  reportMessage.textContent = 'Sending report now...';
   try {
     const res = await apiPost({ action: 'sendReportNow' });
     if (!res.ok) throw new Error(res.error || 'sendReportNow failed');
@@ -681,9 +657,9 @@ async function handleSendReportNow() {
       const state = item.sent ? 'OK' : `FAIL(${safeText(item.error || item.skipped || '')})`;
       return `${item.channel}: ${state}`;
     }).join(' | ');
-    reportMessage.textContent = details || '已送出測試通知';
+    reportMessage.textContent = details || 'Report request sent.';
   } catch (err) {
-    reportMessage.textContent = `寄送失敗: ${safeText(err.message)}`;
+    reportMessage.textContent = `Failed to send report: ${safeText(err.message)}`;
   }
 }
 
@@ -696,7 +672,7 @@ async function handleProbeAction(event) {
   if (!probeId || !probeAction) return;
 
   try {
-    if (probesMessage) probesMessage.textContent = '處理 Probe 狀態中...';
+    if (probesMessage) probesMessage.textContent = 'Updating probe state...';
 
     if (probeAction === 'offline') {
       const res = await apiPost({
@@ -705,9 +681,9 @@ async function handleProbeAction(event) {
         summary: 'Marked offline by admin'
       });
       if (!res.ok) throw new Error(res.error || 'markProbeOffline failed');
-      if (probesMessage) probesMessage.textContent = 'Probe 已標記離線';
+      if (probesMessage) probesMessage.textContent = 'Probe marked offline.';
     } else if (probeAction === 'clear') {
-      const confirmed = window.confirm(`要清理 Probe 狀態嗎？\n${probeId}`);
+      const confirmed = window.confirm(`Clear probe state for ${probeId}?`);
       if (!confirmed) {
         if (probesMessage) probesMessage.textContent = '';
         return;
@@ -717,37 +693,46 @@ async function handleProbeAction(event) {
         probe_id: probeId
       });
       if (!res.ok) throw new Error(res.error || 'clearProbeState failed');
-      if (probesMessage) probesMessage.textContent = 'Probe 狀態已清理';
+      if (probesMessage) probesMessage.textContent = 'Probe state cleared.';
     }
 
     await loadProbes();
   } catch (err) {
-    if (probesMessage) probesMessage.textContent = `Probe 操作失敗: ${safeText(err.message)}`;
+    if (probesMessage) probesMessage.textContent = `Failed to update probe: ${safeText(err.message)}`;
   }
 }
 
-async function loadChecksDates(forceRefresh) {
+async function loadChecksDates(forceRefresh, onProgress) {
   if (!deleteTestDataDateSelect) return;
+  if (typeof onProgress === 'function') onProgress(12);
 
   if (!forceRefresh) {
     const cached = loadCachedDates();
     if (cached) {
       populateDateSelect(cached);
-      if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = `共 ${cached.length} 個日期`;
+      if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = `${cached.length} date options cached.`;
+      if (typeof onProgress === 'function') onProgress(100);
       return;
     }
   }
 
-  if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = '讀取日期中...';
+  if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = 'Loading available dates...';
   try {
     const res = await apiGet({ action: 'getChecksDates' }, 120000);
+    if (typeof onProgress === 'function') onProgress(72);
     const dates = res.ok && res.data && Array.isArray(res.data.dates) ? res.data.dates : [];
     saveCachedDates(dates);
     populateDateSelect(dates);
-    if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = dates.length ? `共 ${dates.length} 個日期` : '目前沒有資料';
+    if (deleteTestDataDatesInfo) {
+      deleteTestDataDatesInfo.textContent = dates.length
+        ? `${dates.length} date options available.`
+        : 'No dates available.';
+    }
+    if (typeof onProgress === 'function') onProgress(100);
   } catch (err) {
-    if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = `讀取失敗: ${safeText(err.message)}`;
-    if (deleteTestDataDateSelect) deleteTestDataDateSelect.innerHTML = '<option value="">目前無法讀取</option>';
+    if (deleteTestDataDatesInfo) deleteTestDataDatesInfo.textContent = `Failed to load dates: ${safeText(err.message)}`;
+    if (deleteTestDataDateSelect) deleteTestDataDateSelect.innerHTML = '<option value="">Failed to load dates</option>';
+    if (typeof onProgress === 'function') onProgress(100);
   }
 }
 
@@ -755,11 +740,11 @@ async function handleDeleteTestData(event) {
   event.preventDefault();
   const date = (deleteTestDataDateSelect?.value || deleteTestDataForm.elements.date_manual?.value || '').trim();
   if (!date) {
-    deleteTestDataMessage.textContent = '請選擇或輸入日期';
+    deleteTestDataMessage.textContent = 'Select a date first.';
     return;
   }
 
-  const confirmed = window.confirm(`確定要刪除 ${date} 的 checks 資料嗎？`);
+  const confirmed = window.confirm(`Delete checks data for ${date}?`);
   if (!confirmed) return;
 
   startDeleteProgress();
@@ -767,33 +752,227 @@ async function handleDeleteTestData(event) {
     const res = await apiPost({ action: 'deleteTestDataByDate', date }, 300000);
     if (!res.ok) throw new Error(res.error || 'deleteTestDataByDate failed');
     finishDeleteProgress(true);
-    deleteTestDataMessage.textContent = `刪除完成，筆數: ${Number(res.data?.deleted_count || 0)}`;
+    deleteTestDataMessage.textContent = `Deleted rows: ${Number(res.data?.deleted_count || 0)}`;
     clearChecksDatesCache();
     await loadChecksDates(true);
   } catch (err) {
     finishDeleteProgress(false);
-    deleteTestDataMessage.textContent = `刪除失敗: ${safeText(err.message)}`;
+    deleteTestDataMessage.textContent = `Failed to delete test data: ${safeText(err.message)}`;
   }
 }
 
 async function handleRunNow() {
-  adminMessage.textContent = '正在執行健康檢查...';
+  adminMessage.textContent = 'Running checks now...';
   try {
     const res = await apiPost({ action: 'runNow', request_probe: true, requested_by: 'admin' });
     if (!res.ok) throw new Error(res.error || 'runNow failed');
     const data = res.data || {};
     const probeRequested = !!data.probe_requested;
     adminMessage.textContent = probeRequested
-      ? 'GAS 已完成整體健康檢查，已通知在線 Probe 同步重測全部服務'
-      : 'GAS 已完成整體健康檢查';
+      ? 'GAS checks started and probe execution requested.'
+      : 'GAS checks started.';
     await Promise.all([loadServices(), loadProbes()]);
     if (probeRequested) {
-      window.setTimeout(() => {
-        Promise.all([loadServices(), loadProbes()]).catch(() => {});
-      }, 6500);
+      await new Promise((resolve) => window.setTimeout(resolve, 6500));
+      await Promise.all([loadServices(), loadProbes()]);
     }
   } catch (err) {
-    adminMessage.textContent = `執行失敗: ${safeText(err.message)}`;
+    adminMessage.textContent = `Failed to run checks: ${safeText(err.message)}`;
+  }
+}
+
+function populateDateSelect(dates) {
+  if (!deleteTestDataDateSelect) return;
+  const list = Array.isArray(dates) ? dates : [];
+  const options = list.map((date) => `<option value="${escapeAttr(date)}">${escapeHtmlText(date)}</option>`).join('');
+  deleteTestDataDateSelect.innerHTML = list.length
+    ? '<option value="">-- Select a date --</option>' + options
+    : '<option value="">No dates available</option>';
+}
+
+function probeCompactTemplateV2(probe) {
+  const state = probeOnlineStateDisplay(probe);
+  const statusClass = state.online ? 'probe-online' : 'probe-offline';
+  const probeId = escapeAttr(probe.probe_id);
+  const summaryText = escapeHtmlText(safeText(probe.last_status_summary) || '-');
+  const errorText = escapeHtmlText(safeText(probe.last_run_error) || '');
+  const versionText = escapeHtmlText(safeText(probe.probe_version) || '-');
+  const appVersionText = probe.app_version ? ` / App ${escapeHtmlText(probe.app_version)}` : '';
+  return `
+    <article class="probe-card probe-card-compact probe-card-compact-v2">
+      <div class="probe-card-header">
+        <div>
+          <strong>${escapeHtmlText(safeText(probe.probe_name) || safeText(probe.probe_id) || '(Probe)')}</strong>
+          <div class="probe-card-subtitle">${escapeHtmlText(safeText(probe.host_name) || '-')} | ${escapeHtmlText(safeText(probe.platform) || '-')} ${escapeHtmlText(safeText(probe.platform_release) || '')}</div>
+        </div>
+        <div class="probe-card-side-actions">
+          <span class="probe-status-badge ${statusClass}">${state.label}</span>
+          <div class="probe-card-actions">
+            <button class="btn tiny" type="button" data-probe-action="offline" data-probe-id="${probeId}">Mark offline</button>
+            <button class="btn tiny danger" type="button" data-probe-action="clear" data-probe-id="${probeId}">Clear state</button>
+          </div>
+        </div>
+      </div>
+      <div class="probe-compact-grid-six">
+        <div class="probe-compact-kpi"><span>Probe ID</span><strong>${escapeHtmlText(safeText(probe.probe_id) || '-')}</strong></div>
+        <div class="probe-compact-kpi"><span>Status</span><strong>${escapeHtmlText(safeText(probe.last_run_status) || '-')}</strong></div>
+        <div class="probe-compact-kpi"><span>Result / DOWN</span><strong>${escapeHtmlText(safeText(probe.last_result_count) || '0')} / ${escapeHtmlText(safeText(probe.last_down_count) || '0')}</strong></div>
+        <div class="probe-compact-kpi"><span>Last seen</span><strong>${fmtDate(probe.last_seen_at)}</strong></div>
+        <div class="probe-compact-kpi"><span>Last run</span><strong>${fmtDate(probe.last_run_finished_at || probe.last_run_started_at)}</strong></div>
+        <div class="probe-compact-kpi"><span>Version</span><strong>${versionText}${appVersionText}</strong></div>
+      </div>
+      <div class="probe-compact-summary-row">
+        <div class="probe-compact-summary"><span>Summary</span><strong class="log-cell-wrap">${summaryText}</strong></div>
+        ${errorText && errorText !== '-' ? `<div class="probe-compact-summary probe-compact-error"><span>Error</span><strong class="log-cell-wrap">${errorText}</strong></div>` : ''}
+      </div>
+    </article>
+  `;
+}
+
+function rowTemplate(rawService) {
+  const service = normalizeService(rawService);
+  const enabled = isEnabled(service.enabled);
+  const allowRedirects = isEnabled(service.allow_redirects);
+  const gasStatusLabel = safeText(service.gas_status) || safeText(service.last_status) || '-';
+  const probeStatusLabel = safeText(service.probe_status) || (service.check_mode === 'dual_pending' ? 'Pending' : '-');
+  const serviceId = escapeAttr(service.id);
+  const cardToneClass = String(service.last_status || '').toUpperCase() === 'UNSTABLE' ? ' service-card-warn' : '';
+
+  return `
+    <article class="service-card${cardToneClass}">
+      <div class="service-card-header">
+        <div class="service-card-title">
+          <span class="name-cell">${statusDot(service.last_status)}<strong>${escapeHtmlText(safeText(service.name) || '(Unnamed Service)')}</strong></span>
+          <span class="service-card-url">${escapeHtmlText(safeText(service.url) || '-')}</span>
+          <span class="service-check-mode-line">${serviceCheckModeBadge(service)}<span class="service-check-mode-detail">${escapeHtmlText(safeText(serviceCheckModeDetail(service)))}</span></span>
+        </div>
+        <div class="service-card-side">
+          <span class="service-card-status">${escapeHtmlText(safeText(service.last_status) || '-')}</span>
+          <span class="service-card-meta">HTTP ${escapeHtmlText(safeText(service.last_http_code) || '-')} | ${escapeHtmlText(safeText(service.last_error_type) || '-')} | Fail Streak ${escapeHtmlText(safeText(service.consecutive_failures) || '0')}</span>
+        </div>
+      </div>
+
+      <div class="service-card-body service-card-body-compact">
+        <div class="service-main-grid">
+          <label class="span-2">
+            Name
+            <input data-field="name" data-id="${serviceId}" value="${escapeAttr(service.name)}" />
+          </label>
+          <label class="span-1">
+            Interval (min)
+            <input data-field="interval_min" data-id="${serviceId}" type="number" min="1" max="1440" value="${escapeAttr(service.interval_min || 5)}" />
+          </label>
+          <label class="span-1">
+            Check type
+            <select data-field="check_type" data-id="${serviceId}">
+              <option value="status_code" ${service.check_type === 'status_code' ? 'selected' : ''}>HTTP status</option>
+              <option value="keyword" ${service.check_type === 'keyword' ? 'selected' : ''}>Keyword</option>
+            </select>
+          </label>
+          <label class="span-3">
+            URL
+            <input data-field="url" data-id="${serviceId}" value="${escapeAttr(service.url)}" />
+          </label>
+          <label class="check-item service-inline-check span-1">
+            <input data-field="enabled" data-id="${serviceId}" type="checkbox" ${enabled ? 'checked' : ''} />
+            <span>Enabled</span>
+          </label>
+        </div>
+
+        <div class="service-result-strip">
+          <div class="service-result-item"><span>Mode</span><strong>${escapeHtmlText(safeText(service.check_mode_label) || 'Unknown')}</strong></div>
+          <div class="service-result-item"><span>Status</span><strong>${escapeHtmlText(safeText(service.last_status) || '-')}</strong></div>
+          <div class="service-result-item"><span>GAS</span><strong class="service-status-chip">${statusDot(gasStatusLabel)}${escapeHtmlText(gasStatusLabel)}</strong></div>
+          <div class="service-result-item"><span>Probe</span><strong class="service-status-chip">${statusDot(probeStatusLabel)}${escapeHtmlText(probeStatusLabel)}</strong></div>
+          <div class="service-result-item"><span>HTTP</span><strong>${escapeHtmlText(safeText(service.last_http_code) || '-')}</strong></div>
+          <div class="service-result-item"><span>Error Type</span><strong>${escapeHtmlText(safeText(service.last_error_type) || '-')}</strong></div>
+          <div class="service-result-item"><span>Fail Streak</span><strong>${escapeHtmlText(safeText(service.consecutive_failures) || '0')}</strong></div>
+          <div class="service-result-item service-result-item-wide"><span>Error</span><strong class="log-cell-wrap">${escapeHtmlText(safeText(service.last_error) || '-')}</strong></div>
+        </div>
+
+        <details class="service-advanced">
+          <summary>Advanced settings</summary>
+          <div class="service-card-grid service-card-grid-compact">
+            <label class="span-1">
+              Max redirects
+              <input data-field="max_redirects" data-id="${serviceId}" type="number" min="0" max="10" value="${escapeAttr(service.max_redirects)}" />
+            </label>
+            <label class="span-1">
+              Latency warn (ms)
+              <input data-field="latency_warn_ms" data-id="${serviceId}" type="number" min="0" max="600000" value="${escapeAttr(service.latency_warn_ms)}" />
+            </label>
+            <label class="span-1">
+              Fail threshold
+              <input data-field="fail_threshold" data-id="${serviceId}" type="number" min="1" max="10" value="${escapeAttr(service.fail_threshold)}" />
+            </label>
+            <label class="span-1">
+              Retry count
+              <input data-field="retry_count" data-id="${serviceId}" type="number" min="1" max="5" value="${escapeAttr(service.retry_count)}" />
+            </label>
+            <label class="span-1">
+              Retry delay (ms)
+              <input data-field="retry_delay_ms" data-id="${serviceId}" type="number" min="0" max="10000" value="${escapeAttr(service.retry_delay_ms)}" />
+            </label>
+            <label class="check-item service-inline-check span-1">
+              <input data-field="allow_redirects" data-id="${serviceId}" type="checkbox" ${allowRedirects ? 'checked' : ''} />
+              <span>Follow redirects</span>
+            </label>
+            <label class="span-2">
+              Expected keyword
+              <input data-field="expected_keyword" data-id="${serviceId}" value="${escapeAttr(service.expected_keyword)}" placeholder="Optional keyword that must appear" />
+            </label>
+            <label class="span-2">
+              Forbidden keyword
+              <input data-field="forbidden_keyword" data-id="${serviceId}" value="${escapeAttr(service.forbidden_keyword)}" placeholder="Optional keyword that must not appear" />
+            </label>
+            <label class="span-2">
+              Expected final URL
+              <input data-field="expected_final_url" data-id="${serviceId}" value="${escapeAttr(service.expected_final_url)}" placeholder="Optional URL after redirects" />
+            </label>
+            <label class="span-2">
+              Secondary URL
+              <input data-field="secondary_url" data-id="${serviceId}" value="${escapeAttr(service.secondary_url)}" placeholder="Optional fallback or probe URL" />
+            </label>
+          </div>
+        </details>
+      </div>
+
+      <div class="service-card-actions">
+        <button class="btn tiny" data-action="save" data-id="${serviceId}">Save</button>
+        <button class="btn tiny secondary" data-action="refresh" data-id="${serviceId}">Refresh</button>
+        <button class="btn tiny danger" data-action="disable" data-id="${serviceId}">Disable</button>
+        <button class="btn tiny danger" data-action="remove" data-id="${serviceId}" data-name="${escapeAttr(service.name)}">Remove</button>
+      </div>
+    </article>
+  `;
+}
+
+function applyReportConfig(cfg) {
+  if (!reportForm) return;
+  const rawMode = safeText(cfg.notify_mode || 'mail');
+  const notifyMode = rawMode === 'all'
+    ? 'mail_line'
+    : rawMode === 'mail_teams'
+      ? 'mail'
+      : rawMode;
+  reportForm.elements.recipients.value = safeText(cfg.recipients || '');
+  reportForm.elements.notify_mode.value = notifyMode;
+  reportForm.elements.frequency.value = safeText(cfg.frequency || 'hourly');
+  reportForm.elements.daily_hour.value = Number.isFinite(Number(cfg.daily_hour)) ? Number(cfg.daily_hour) : 9;
+  reportForm.elements.enabled.checked = String(cfg.enabled).toLowerCase() !== 'false';
+  reportForm.elements.only_on_issue.checked = String(cfg.only_on_issue).toLowerCase() !== 'false';
+  reportForm.elements.line_to.value = safeText(cfg.line_to || '');
+  reportForm.elements.monitor_label.value = safeText(cfg.monitor_label || '');
+
+  const tokenInput = reportForm.elements.line_channel_access_token;
+  if (tokenInput) {
+    const masked = safeText(cfg.line_channel_access_token_masked || '');
+    tokenInput.value = '';
+    tokenInput.dataset.configured = cfg.line_channel_access_token_configured ? 'true' : 'false';
+    tokenInput.placeholder = masked
+      ? `Configured token (${masked}) - leave blank to keep existing`
+      : 'LINE Messaging API Channel Access Token';
+    tokenInput.autocomplete = 'off';
   }
 }
 
@@ -804,33 +983,39 @@ if (probesBody) probesBody.addEventListener('click', handleProbeAction);
 if (addForm) addForm.addEventListener('submit', handleAdd);
 if (adminBody) adminBody.addEventListener('click', handleTableClick);
 if (reportForm) reportForm.addEventListener('submit', handleSaveReport);
-if (reloadReportBtn) reloadReportBtn.addEventListener('click', () => loadReportConfig());
+if (reloadReportBtn) reloadReportBtn.addEventListener('click', handleReloadReportWithOverlay);
 if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendReportNow);
 if (deleteTestDataForm) deleteTestDataForm.addEventListener('submit', handleDeleteTestData);
-if (reloadDeleteDatesBtn) reloadDeleteDatesBtn.addEventListener('click', () => loadChecksDates(true));
+if (reloadDeleteDatesBtn) reloadDeleteDatesBtn.addEventListener('click', handleReloadDeleteDatesWithOverlay);
 
 async function initFirstLoad() {
   setLoadingOverlay(true);
-  setLoadingProgress(8, '載入管理頁...');
+  setLoadingProgress(8, '正在載入管理頁面...');
   try {
-    await Promise.all([
-      loadServices((p) => setLoadingProgress(8 + p * 0.5, '載入服務設定...')),
-      loadProbes((p) => setLoadingProgress(58 + p * 0.16, '載入 Probe 管理...')),
-      loadReportConfig((p) => setLoadingProgress(74 + p * 0.26, '載入通知設定...'))
+    const results = await Promise.allSettled([
+      loadServices((p) => setLoadingProgress(8 + p * 0.46, '正在載入服務設定...')),
+      loadProbes((p) => setLoadingProgress(54 + p * 0.16, '正在載入 Probe 狀態...')),
+      loadReportConfig((p) => setLoadingProgress(70 + p * 0.18, '正在載入報表設定...')),
+      loadChecksDates(false, (p) => setLoadingProgress(88 + p * 0.12, '正在載入日期資料...'))
     ]);
-    setLoadingProgress(100, '載入完成');
-  } catch (err) {
-    adminMessage.textContent = `載入失敗: ${safeText(err.message)}`;
-  } finally {
-    if (firstLoadPending) {
-      firstLoadPending = false;
-      window.setTimeout(() => setLoadingOverlay(false), 220);
+    const failedCount = results.filter((item) => item.status === 'rejected').length;
+    finishFirstLoadOverlay('載入完成', 100);
+    if (failedCount && adminMessage) {
+      adminMessage.textContent = `部分資料載入失敗，共 ${failedCount} 項。請稍後重新整理。`;
     }
+  } catch (err) {
+    adminMessage.textContent = `管理頁初始化失敗: ${safeText(err.message)}`;
+    finishFirstLoadOverlay('載入失敗', 100);
   }
 
-  loadChecksDates(false);
   loadHostBadge();
 }
 
 resetAddFormDefaults();
 initFirstLoad();
+
+
+
+
+
+
