@@ -217,7 +217,7 @@ function doGet(e) {
         result = runNow_(p);
         break;
       case "getReportConfig":
-        result = { ok: true, data: getReportConfig_() };
+        result = { ok: true, data: getReportConfigForClient_() };
         break;
       case "updateReportConfig":
         result = updateReportConfig_(p);
@@ -298,7 +298,7 @@ function doPost(e) {
         result = runNow_(body);
         break;
       case "getReportConfig":
-        result = { ok: true, data: getReportConfig_() };
+        result = { ok: true, data: getReportConfigForClient_() };
         break;
       case "updateReportConfig":
         result = updateReportConfig_(body);
@@ -2008,19 +2008,43 @@ function normalizeReportConfig_(cfg) {
   return out;
 }
 
+function resolveSecretConfigValue_(existingValue, nextValue) {
+  const existing = String(existingValue || "").trim();
+  if (nextValue === undefined || nextValue === null) return existing;
+  const incoming = String(nextValue || "").trim();
+  if (!incoming) return existing;
+  if (incoming === tokenPreview_(existing)) return existing;
+  return incoming;
+}
+
+function getReportConfigForClient_() {
+  const cfg = getReportConfig_();
+  const out = Object.assign({}, cfg);
+  const lineToken = String(cfg.line_channel_access_token || "").trim();
+  const teamsWebhook = String(cfg.teams_webhook_url || "").trim();
+  out.line_channel_access_token = "";
+  out.line_channel_access_token_configured = !!lineToken;
+  out.line_channel_access_token_masked = tokenPreview_(lineToken);
+  out.teams_webhook_url = "";
+  out.teams_webhook_url_configured = !!teamsWebhook;
+  out.teams_webhook_url_masked = tokenPreview_(teamsWebhook);
+  return out;
+}
+
 function updateReportConfig_(payload) {
-  const cfg = normalizeReportConfig_({
+  const existing = getReportConfig_();
+  const cfg = normalizeReportConfig_(Object.assign({}, existing, {
     recipients: payload.recipients,
     frequency: payload.frequency,
     daily_hour: payload.daily_hour,
     enabled: payload.enabled,
     only_on_issue: payload.only_on_issue,
     notify_mode: payload.notify_mode,
-    line_channel_access_token: payload.line_channel_access_token,
+    line_channel_access_token: resolveSecretConfigValue_(existing.line_channel_access_token, payload.line_channel_access_token),
     line_to: payload.line_to,
-    teams_webhook_url: payload.teams_webhook_url,
+    teams_webhook_url: resolveSecretConfigValue_(existing.teams_webhook_url, payload.teams_webhook_url),
     monitor_label: payload.monitor_label
-  });
+  }));
 
   const needsMail = cfg.notify_mode !== "line_only";
   if (needsMail && !cfg.recipients) return { ok: false, error: "Recipients required for mail mode" };
@@ -2036,7 +2060,7 @@ function updateReportConfig_(payload) {
     return { ok: false, error: "Teams mode requires teams_webhook_url" };
   }
   PropertiesService.getScriptProperties().setProperty(PROP_REPORT_CONFIG, JSON.stringify(cfg));
-  return { ok: true, data: cfg };
+  return { ok: true, data: getReportConfigForClient_() };
 }
 
 /*************** Report Sending ***************/

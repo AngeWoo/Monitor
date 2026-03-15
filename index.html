@@ -3,19 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Service Monitor Dashboard</title>
-  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./assets/style.css?v=20260315-a033" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <title>Server Monitor 儀表板</title>
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260315-a045" />
+  <link rel="stylesheet" href="./assets/style.css?v=20260315-a061" />
 </head>
 <body class="page-dashboard">
   <div id="loadingOverlay" class="loading-overlay">
     <div class="loading-card">
       <div class="loading-text">
-        <span id="loadingLabel">資料載入中...</span>
+        <span id="loadingLabel">正在載入儀表板...</span>
         <strong id="loadingPercent">0%</strong>
       </div>
       <div class="loading-bar"><div id="loadingBarInner" class="loading-bar-inner"></div></div>
@@ -23,13 +19,19 @@
   </div>
   <div class="bg-gradient"></div>
   <header class="topbar">
-    <div>
-      <h1>Service Monitor</h1>
-      <p>Dashboard &nbsp;<span id="hostBadge" class="host-badge" title="監控來源主機"></span></p>
+    <div class="brand-lockup">
+      <a class="brand-home" href="./index.html" aria-label="重新載入儀表板">
+        <img class="brand-logo" src="./assets/favicon.svg?v=20260315-a043" alt="Server Monitor logo" />
+      </a>
+      <div class="brand-copy">
+        <span class="brand-eyebrow">Infrastructure Observability</span>
+        <h1>Server Monitor</h1>
+        <p>儀表板總覽 <span id="hostBadge" class="host-badge" title="顯示目前前端頁面來源主機"></span></p>
+      </div>
     </div>
     <nav>
-      <a class="active" href="./index.html">Dashboard</a>
-      <a href="./admin.html">後台管理</a>
+      <a class="active" href="./index.html">儀表板</a>
+      <a href="./admin.html">管理設定</a>
       <a href="./health.html">健康檢查</a>
     </nav>
   </header>
@@ -39,30 +41,30 @@
 
     <section class="panel">
       <div class="panel-header">
-        <h2>服務狀態</h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M7 9h6"></path><path d="M7 13h10"></path></svg></span><span>服務狀態</span></h2>
         <div class="row-actions">
-          <label class="inline-field" for="refreshIntervalSelect">自動刷新</label>
+          <label class="inline-field" for="refreshIntervalSelect">自動更新頻率</label>
           <select id="refreshIntervalSelect" class="select">
             <option value="30">30 秒</option>
             <option value="60" selected>60 秒</option>
             <option value="120">120 秒</option>
           </select>
-          <span id="autoRefreshInfo" class="hint">每 60 秒自動更新</span>
-          <button id="refreshBtn" class="btn">重新整理</button>
+          <span id="autoRefreshInfo" class="hint">每 60 秒自動更新一次</span>
+          <button id="refreshBtn" class="btn">重新載入資料</button>
         </div>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>名稱</th>
+              <th>服務名稱</th>
               <th>URL</th>
               <th>狀態</th>
               <th>HTTP</th>
-              <th>延遲(ms)</th>
-              <th>頻率(分)</th>
-              <th>最後檢查</th>
-              <th>查看明細</th>
+              <th>延遲 (ms)</th>
+              <th>間隔 (分)</th>
+              <th>最後檢查時間</th>
+              <th>動作</th>
             </tr>
           </thead>
           <tbody id="servicesBody"></tbody>
@@ -70,19 +72,57 @@
       </div>
     </section>
 
+    <section class="charts-grid">
+      <article class="panel">
+        <div class="panel-header">
+          <h2 id="latencyTitle" class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 15h4l2-6 4 10 2-6h4"></path></svg></span><span class="title-text">Latency (24h)</span></h2>
+          <div class="row-actions latency-filters">
+            <select id="hoursSelect" class="select">
+              <option value="6">6 小時</option>
+              <option value="24" selected>24 小時</option>
+              <option value="72">72 小時</option>
+            </select>
+            <input id="latencyRangeStart" type="datetime-local" />
+            <input id="latencyRangeEnd" type="datetime-local" />
+            <button class="btn tiny secondary quick-range-btn" type="button" data-minutes="30">最近 30 分</button>
+            <button class="btn tiny secondary quick-range-btn" type="button" data-minutes="60">最近 1 小時</button>
+            <button class="btn tiny secondary quick-range-btn" type="button" data-minutes="180">最近 3 小時</button>
+            <button id="applyLatencyRangeBtn" class="btn tiny secondary" type="button">套用區間</button>
+            <button id="clearLatencyRangeBtn" class="btn tiny secondary" type="button">清除</button>
+          </div>
+        </div>
+        <canvas id="latencyChart"></canvas>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2 id="uptimeTitle" class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v9"></path><path d="M7 5.8a8 8 0 1 0 10 0"></path></svg></span><span class="title-text">Uptime Ratio</span></h2>
+        </div>
+        <canvas id="uptimeChart"></canvas>
+      </article>
+    </section>
+
     <section class="panel">
       <div class="panel-header">
-        <h2 id="historyTitle">每分鐘歷史記錄</h2>
+        <h2 id="allLatencyTitle" class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 19V9"></path><path d="M12 19V5"></path><path d="M19 19v-7"></path></svg></span><span class="title-text">全部服務 Latency 趨勢</span></h2>
+        <strong id="allAvailabilityBadge" class="all-availability-badge">整體可用率 --%</strong>
+      </div>
+      <canvas id="allLatencyChart"></canvas>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2 id="historyTitle" class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8v5l3 2"></path><circle cx="12" cy="12" r="8"></circle></svg></span><span class="title-text">每分鐘歷史記錄 - 全部服務</span></h2>
       </div>
       <div class="table-wrap">
         <table>
           <thead id="minuteHistoryHead">
             <tr>
-              <th><button class="th-sort active" data-sort-key="minute" data-sort-type="date">分鐘</button></th>
-              <th><button class="th-sort" data-sort-key="upCount" data-sort-type="number">UP 次數</button></th>
-              <th><button class="th-sort" data-sort-key="downCount" data-sort-type="number">DOWN 次數</button></th>
-              <th><button class="th-sort" data-sort-key="avgLatency" data-sort-type="number">平均延遲(ms)</button></th>
-              <th><button class="th-sort" data-sort-key="lastHttp" data-sort-type="number">最後 HTTP</button></th>
+              <th><button class="th-sort active" data-sort-key="minute" data-sort-type="date">時間</button></th>
+              <th><button class="th-sort" data-sort-key="upCount" data-sort-type="number">UP 數量</button></th>
+              <th><button class="th-sort" data-sort-key="downCount" data-sort-type="number">DOWN 數量</button></th>
+              <th><button class="th-sort" data-sort-key="avgLatency" data-sort-type="number">平均延遲 (ms)</button></th>
+              <th><button class="th-sort" data-sort-key="lastHttp" data-sort-type="number">最新 HTTP</button></th>
             </tr>
           </thead>
           <tbody id="minuteHistoryBody"></tbody>
@@ -96,46 +136,30 @@
         </div>
       </div>
     </section>
-
-    <section class="charts-grid">
-      <article class="panel">
-        <div class="panel-header">
-          <h2 id="latencyTitle">Latency (24h)</h2>
-          <div class="row-actions latency-filters">
-            <select id="hoursSelect" class="select">
-              <option value="6">6 小時</option>
-              <option value="24" selected>24 小時</option>
-              <option value="72">72 小時</option>
-            </select>
-            <input id="latencyRangeStart" type="datetime-local" />
-            <input id="latencyRangeEnd" type="datetime-local" />
-            <button class="btn tiny secondary quick-range-btn" type="button" data-minutes="30">近30分</button>
-            <button class="btn tiny secondary quick-range-btn" type="button" data-minutes="60">近1小時</button>
-            <button class="btn tiny secondary quick-range-btn" type="button" data-minutes="180">近3小時</button>
-            <button id="applyLatencyRangeBtn" class="btn tiny secondary" type="button">套用區間</button>
-            <button id="clearLatencyRangeBtn" class="btn tiny secondary" type="button">清除</button>
-          </div>
-        </div>
-        <canvas id="latencyChart"></canvas>
-      </article>
-
-      <article class="panel">
-        <div class="panel-header">
-          <h2 id="uptimeTitle">Uptime Ratio</h2>
-        </div>
-        <canvas id="uptimeChart"></canvas>
-      </article>
-    </section>
-
-    <section class="panel">
-      <div class="panel-header">
-        <h2 id="allLatencyTitle">所有測試項目 Latency 統計</h2>
-        <strong id="allAvailabilityBadge" class="all-availability-badge">整體服務可用率: --%</strong>
-      </div>
-      <canvas id="allLatencyChart"></canvas>
-    </section>
   </main>
 
-  <script type="module" src="./assets/dashboard.js?v=20260314-a018"></script>
+  <div id="serviceDetailModal" class="service-modal hidden" aria-hidden="true">
+    <div class="service-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="serviceDetailModalTitle">
+      <div class="service-modal-header">
+        <div>
+          <h2 id="serviceDetailModalTitle">服務詳細資料</h2>
+          <p id="serviceDetailModalSubtitle" class="service-modal-subtitle">查看該服務的基本資訊</p>
+        </div>
+        <button id="serviceDetailModalClose" class="service-modal-close" type="button" aria-label="關閉視窗">×</button>
+      </div>
+      <div id="serviceDetailModalBody" class="service-modal-body">
+        <div class="service-modal-empty">
+          <strong>正在準備服務資料</strong>
+          <p>請從服務列表按下查看詳情，這裡會顯示該服務的基本資訊與最近狀態。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="page-footer">
+    <small>Copyright © 2026 Server Monitor. All rights reserved.</small>
+  </footer>
+
+  <script type="module" src="./assets/dashboard.js?v=20260315-a063"></script>
 </body>
 </html>

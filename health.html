@@ -3,18 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Service Monitor Health</title>
-  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./assets/style.css?v=20260315-a033" />
+  <title>Server Monitor Health</title>
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260315-a053" />
+  <link rel="stylesheet" href="./assets/style.css?v=20260315-a061" />
 </head>
-<body>
+<body class="page-health">
   <div id="loadingOverlay" class="loading-overlay">
     <div class="loading-card">
       <div class="loading-text">
-        <span id="loadingLabel">載入中...</span>
+        <span id="loadingLabel">正在載入健康狀態...</span>
         <strong id="loadingPercent">0%</strong>
       </div>
       <div class="loading-bar"><div id="loadingBarInner" class="loading-bar-inner"></div></div>
@@ -22,46 +19,53 @@
   </div>
   <div class="bg-gradient"></div>
   <header class="topbar">
-    <div>
-      <h1>Service Monitor</h1>
-      <p>後台健康檢查 &nbsp;<span id="hostBadge" class="host-badge" title="監控來源主機"></span></p>
+    <div class="brand-lockup">
+      <a class="brand-home" href="./index.html" aria-label="回到儀表板">
+        <img class="brand-logo" src="./assets/favicon.svg?v=20260315-a053" alt="Server Monitor logo" />
+      </a>
+      <div class="brand-copy">
+        <span class="brand-eyebrow">Infrastructure Observability</span>
+        <h1>Server Monitor</h1>
+        <p>健康檢視 &nbsp;<span id="hostBadge" class="host-badge" title="目前使用中的後端位址"></span></p>
+      </div>
     </div>
     <nav>
-      <a href="./index.html">Dashboard</a>
+      <a href="./index.html">儀表板</a>
       <a href="./admin.html">管理設定</a>
-      <a class="active" href="./health.html">健康檢查</a>
+      <a class="active" href="./health.html">健康檢視</a>
     </nav>
   </header>
 
   <main class="container">
     <section class="panel">
       <div class="panel-header">
-        <h2>健康檢查摘要</h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 13h4l2-4 4 8 2-4h4"></path></svg></span><span>健康狀態總覽</span></h2>
         <div class="row-actions">
-          <button id="runNowBtn" class="btn secondary" type="button">立即執行</button>
-          <button id="refreshBtn" class="btn" type="button">重新整理</button>
+          <button id="runNowBtn" class="btn secondary" type="button">立即執行檢查</button>
+          <button id="refreshBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
       <div class="summary-grid" id="healthSummary"></div>
       <p id="healthMessage" class="message"></p>
+      <div id="delayOverview" class="health-delay-overview"></div>
     </section>
 
     <section class="panel">
       <div class="panel-header">
-        <h2>逾時或異常服務</h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4 4 19h16Z"></path><path d="M12 9v4"></path><path d="M12 16h.01"></path></svg></span><span>逾時或異常服務</span></h2>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>服務名稱</th>
-              <th>檢查間隔(分)</th>
+              <th>服務</th>
+              <th>檢查間隔 (分)</th>
               <th>最後檢查</th>
-              <th>下次預定</th>
+              <th>下次檢查</th>
               <th>狀態</th>
               <th>HTTP</th>
-              <th>錯誤訊息</th>
-              <th>原因</th>
+              <th>延遲</th>
+              <th>說明</th>
             </tr>
           </thead>
           <tbody id="staleBody"></tbody>
@@ -71,25 +75,25 @@
 
     <section class="panel">
       <div class="panel-header">
-        <h2>通知發送紀錄</h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m4 7 8 6 8-6"></path></svg></span><span>通知紀錄</span></h2>
         <div class="row-actions">
-          <button id="mailLogTabBtn" class="btn tiny secondary active" type="button" data-log-channel="mail">郵件</button>
+          <button id="mailLogTabBtn" class="btn tiny secondary active" type="button" data-log-channel="mail">Mail</button>
           <button id="lineLogTabBtn" class="btn tiny secondary" type="button" data-log-channel="line">LINE</button>
           <button id="notifyLogRefreshBtn" class="btn tiny secondary" type="button">重新載入</button>
-          <button id="notifyLogClearBtn" class="btn tiny danger" type="button">清除紀錄</button>
+          <button id="notifyLogClearBtn" class="btn tiny danger" type="button">清空紀錄</button>
         </div>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>發送時間</th>
-              <th>觸發方式</th>
-              <th>結果</th>
-              <th>異常 / 服務</th>
-              <th>對象</th>
-              <th>主旨</th>
-              <th>備註</th>
+              <th>時間</th>
+              <th>通知對象</th>
+              <th>狀態</th>
+              <th>結果 / 說明</th>
+              <th>通知內容</th>
+              <th>來源</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody id="notifyLogBody"></tbody>
@@ -106,6 +110,10 @@
     </section>
   </main>
 
-<script type="module" src="./assets/health.js?v=20260315-a030"></script>
+  <footer class="page-footer">
+    <small>Copyright © 2026 Server Monitor. All rights reserved.</small>
+  </footer>
+
+  <script type="module" src="./assets/health.js?v=20260315-a055"></script>
 </body>
 </html>

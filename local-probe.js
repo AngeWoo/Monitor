@@ -888,9 +888,18 @@ async function runProbeOnce() {
     services = [matched];
   }
   const results = [];
+  const writeErrors = [];
 
   for (const service of services) {
     const result = await runServiceProbe(service);
+    results.push({
+      service: service.name || service.url,
+      status: result.status,
+      httpCode: result.httpCode,
+      errorType: result.errorType || "",
+      error: result.error || ""
+    });
+
     const payload = {
       action: "appendProbeCheck",
       ...RUNTIME.metadata,
@@ -911,42 +920,41 @@ async function runProbeOnce() {
       }
     };
 
-    const writeResponse = await apiPost(payload);
-    if (!writeResponse.ok) {
-      throw new Error(writeResponse.error || `appendProbeCheck failed for ${service.name || service.id}`);
+    try {
+      const writeResponse = await apiPost(payload);
+      if (!writeResponse.ok) {
+        throw new Error(writeResponse.error || `appendProbeCheck failed for ${service.name || service.id}`);
+      }
+    } catch (error) {
+      writeErrors.push(`${service.name || service.id}: ${error.message || error}`);
     }
-
-    results.push({
-      service: service.name || service.url,
-      status: result.status,
-      httpCode: result.httpCode,
-      errorType: result.errorType || "",
-      error: result.error || ""
-    });
   }
 
   const downCount = results.filter((item) => item.status === "DOWN").length;
   const summary = results.slice(0, 8).map((item) => `${item.service}:${item.status}`).join(" | ");
   const finishedAt = new Date().toISOString();
+  const runStatus = writeErrors.length ? "PARTIAL_ERROR" : "OK";
+  const runError = writeErrors.length ? writeErrors.slice(0, 6).join(" | ") : "";
 
   await upsertProbe({
     last_run_started_at: startedAt,
     last_run_finished_at: finishedAt,
-    last_run_status: "OK",
-    last_run_error: "",
+    last_run_status: runStatus,
+    last_run_error: runError,
     last_result_count: results.length,
     last_down_count: downCount,
     last_status_summary: summary
   });
 
   const summaryPayload = {
-    ok: true,
+    ok: writeErrors.length === 0,
     probe_id: RUNTIME.probeId,
     probe_name: RUNTIME.probeName,
     config_path: RUNTIME.configPath,
     service_count: results.length,
     down_count: downCount,
-    results
+    results,
+    write_errors: writeErrors
   };
 
   console.log(JSON.stringify(summaryPayload, null, 2));
@@ -955,7 +963,8 @@ async function runProbeOnce() {
     probeName: RUNTIME.probeName,
     startedAt,
     finishedAt,
-    runStatus: "OK",
+    runStatus,
+    errorMessage: runError,
     results
   });
 }

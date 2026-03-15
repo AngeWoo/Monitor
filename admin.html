@@ -3,18 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Service Monitor Admin</title>
-  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./assets/style.css?v=20260315-a033" />
+  <title>Server Monitor Admin</title>
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260315-a049" />
+  <link rel="stylesheet" href="./assets/style.css?v=20260315-a061" />
 </head>
-<body>
+<body class="page-admin">
   <div id="loadingOverlay" class="loading-overlay">
     <div class="loading-card">
       <div class="loading-text">
-        <span id="loadingLabel">載入中...</span>
+        <span id="loadingLabel">正在載入管理頁面...</span>
         <strong id="loadingPercent">0%</strong>
       </div>
       <div class="loading-bar"><div id="loadingBarInner" class="loading-bar-inner"></div></div>
@@ -22,30 +19,36 @@
   </div>
   <div class="bg-gradient"></div>
   <header class="topbar">
-    <div>
-      <h1>Service Monitor</h1>
-      <p>管理設定 &nbsp;<span id="hostBadge" class="host-badge" title="監控來源主機"></span></p>
+    <div class="brand-lockup">
+      <a class="brand-home" href="./index.html" aria-label="回到儀表板">
+        <img class="brand-logo" src="./assets/favicon.svg?v=20260315-a049" alt="Server Monitor logo" />
+      </a>
+      <div class="brand-copy">
+        <span class="brand-eyebrow">Infrastructure Observability</span>
+        <h1>Server Monitor</h1>
+        <p>管理設定 &nbsp;<span id="hostBadge" class="host-badge" title="目前使用中的後端位址"></span></p>
+      </div>
     </div>
     <nav>
-      <a href="./index.html">Dashboard</a>
+      <a href="./index.html">儀表板</a>
       <a class="active" href="./admin.html">管理設定</a>
-      <a href="./health.html">健康檢查</a>
+      <a href="./health.html">健康檢視</a>
     </nav>
   </header>
 
   <main class="container admin-grid">
     <section class="panel">
       <div class="panel-header">
-        <h2>通知設定</h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m4 7 8 6 8-6"></path></svg></span><span>報表設定</span></h2>
         <div class="row-actions">
-          <button id="sendReportNowBtn" class="btn secondary" type="button">立即寄送測試報告</button>
+          <button id="sendReportNowBtn" class="btn secondary" type="button">立即發送報表</button>
           <button id="reloadReportBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
       <form id="reportForm" class="report-grid report-grid-compact">
         <label class="report-col-monitor">
-          監控站名稱
-          <input name="monitor_label" placeholder="例如：Production / Office NAS / Taiwan IDC" />
+          監控名稱
+          <input name="monitor_label" placeholder="例如 Production / Office NAS / Taiwan IDC" />
         </label>
         <label class="report-col-recipients">
           Mail 收件人
@@ -54,30 +57,30 @@
         <label class="report-col-mode">
           通知模式
           <select name="notify_mode">
-            <option value="mail">只寄 Mail</option>
+            <option value="mail">僅 Mail</option>
             <option value="mail_line">Mail + LINE</option>
-            <option value="line_only">只發 LINE</option>
+            <option value="line_only">僅 LINE</option>
           </select>
         </label>
         <label class="report-col-frequency">
-          發送頻率
+          報表頻率
           <select name="frequency">
             <option value="hourly">每小時</option>
-            <option value="daily">每天</option>
+            <option value="daily">每日</option>
           </select>
         </label>
         <label class="report-col-daily-hour">
-          每日發送時間（0-23）
+          每日發送小時 (0-23)
           <input name="daily_hour" type="number" min="0" max="23" value="9" />
         </label>
         <div class="check-row report-col-options">
           <label class="check-item">
             <input name="enabled" type="checkbox" checked />
-            <span>啟用通知</span>
+            <span>啟用報表</span>
           </label>
           <label class="check-item">
             <input name="only_on_issue" type="checkbox" checked />
-            <span>只在確認 DOWN 時通知</span>
+            <span>僅異常時通知</span>
           </label>
         </div>
         <label class="report-col-line-token">
@@ -86,11 +89,11 @@
         </label>
         <label class="report-col-line-to">
           LINE To
-          <input name="line_to" placeholder="可填單一 ID、逗號分隔、或 JSON 陣列" />
+          <input name="line_to" placeholder="可填單一 ID、多個 ID，或 JSON 陣列" />
         </label>
-        <p id="lineUserStats" class="message report-inline-note">Recorded LINE users: 0</p>
+        <p id="lineUserStats" class="message report-inline-note">正在載入 LINE 對象統計...</p>
         <div class="report-actions report-col-submit">
-          <button class="btn report-save-btn" type="submit">儲存通知設定</button>
+          <button class="btn report-save-btn" type="submit">儲存報表設定</button>
         </div>
       </form>
       <p id="reportMessage" class="message"></p>
@@ -98,7 +101,7 @@
 
     <section class="panel">
       <div class="panel-header">
-        <h2>刪除測試資料</h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M10 11v5"></path><path d="M14 11v5"></path><path d="M6 7l1 12h10l1-12"></path><path d="M9 7V4h6v3"></path></svg></span><span>刪除測試資料</span></h2>
         <div class="row-actions">
           <span id="deleteTestDataDatesInfo" class="hint"></span>
           <button id="reloadDeleteDatesBtn" class="btn tiny secondary" type="button">重新載入日期</button>
@@ -106,13 +109,13 @@
       </div>
       <form id="deleteTestDataForm" class="test-data-grid">
         <label>
-          已存在日期
+          選擇可刪除日期
           <select id="deleteTestDataDateSelect" name="date_select">
-            <option value="">-- 請選擇 --</option>
+            <option value="">-- 請選擇日期 --</option>
           </select>
         </label>
         <label>
-          手動輸入日期
+          或手動指定日期
           <input name="date_manual" type="date" />
         </label>
         <button id="deleteTestDataSubmitBtn" class="btn danger" type="submit">刪除指定日期資料</button>
@@ -128,23 +131,23 @@
     </section>
 
     <section class="panel">
-      <h2>新增服務</h2>
-      <p class="hint service-defaults-intro">未填欄位會套用系統預設值，下面每個設定在服務管理區也會依這份規則運作。</p>
+      <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg></span><span>新增服務</span></h2>
+      <p class="hint service-defaults-intro">以下欄位會作為新服務的初始設定。新增後仍可在服務管理卡片中再調整。</p>
       <div class="service-defaults-grid">
-        <div><strong>服務名稱</strong><span>必填，無預設值</span></div>
-        <div><strong>URL</strong><span>必填，無預設值</span></div>
+        <div><strong>服務名稱</strong><span>顯示於列表與報表中的名稱</span></div>
+        <div><strong>URL</strong><span>主要監控的目標網址</span></div>
         <div><strong>檢查間隔</strong><span>預設 5 分鐘</span></div>
-        <div><strong>檢查類型</strong><span>預設 HTTP 狀態碼</span></div>
-        <div><strong>必須包含關鍵字</strong><span>預設空白，不檢查</span></div>
-        <div><strong>不可包含關鍵字</strong><span>預設空白，不檢查</span></div>
-        <div><strong>預期最終網址</strong><span>預設空白，不限制</span></div>
-        <div><strong>備援/第二入口網址</strong><span>預設空白，只檢查主網址</span></div>
-        <div><strong>允許跳轉</strong><span>預設啟用</span></div>
-        <div><strong>最大跳轉次數</strong><span>預設 5 次</span></div>
-        <div><strong>延遲警戒</strong><span>預設 5000 ms</span></div>
-        <div><strong>失敗門檻</strong><span>預設連續 2 次才判定 down</span></div>
+        <div><strong>檢查類型</strong><span>可選 HTTP 狀態碼或關鍵字</span></div>
+        <div><strong>必須包含關鍵字</strong><span>當選用關鍵字檢查時使用</span></div>
+        <div><strong>禁止關鍵字</strong><span>當內容中出現時視為異常</span></div>
+        <div><strong>預期最終 URL</strong><span>驗證轉址後的最終位址</span></div>
+        <div><strong>備援檢查 URL</strong><span>可作為備援或 Probe 專用位址</span></div>
+        <div><strong>允許自動轉址</strong><span>預設啟用</span></div>
+        <div><strong>最大轉址數</strong><span>預設 5 次</span></div>
+        <div><strong>延遲警戒值</strong><span>預設 5000 ms</span></div>
+        <div><strong>連續失敗門檻</strong><span>預設 2 次後視為異常</span></div>
         <div><strong>重試次數</strong><span>預設 2 次</span></div>
-        <div><strong>重試間隔</strong><span>預設 1200 ms</span></div>
+        <div><strong>重試延遲</strong><span>預設 1200 ms</span></div>
       </div>
       <form id="addForm" class="form-grid service-add-grid">
         <label>
@@ -156,42 +159,42 @@
           <input required name="url" type="url" placeholder="https://example.com/health" />
         </label>
         <label>
-          檢查間隔(分)
+          檢查間隔 (分)
           <input required name="interval_min" type="number" min="1" max="1440" value="5" />
         </label>
         <label>
-          檢測方式
+          檢查類型
           <select name="check_type">
             <option value="status_code">HTTP 狀態碼</option>
-            <option value="keyword">關鍵字驗證</option>
+            <option value="keyword">關鍵字</option>
           </select>
         </label>
         <label>
           必須包含關鍵字
-          <input name="expected_keyword" placeholder="例如：Welcome / OK / healthy" />
+          <input name="expected_keyword" placeholder="例如 Welcome / OK / healthy" />
         </label>
         <label>
-          不可包含關鍵字
-          <input name="forbidden_keyword" placeholder="例如：Error / Maintenance" />
+          禁止關鍵字
+          <input name="forbidden_keyword" placeholder="例如 Error / Maintenance" />
         </label>
         <label>
-          預期最終網址
+          預期最終 URL
           <input name="expected_final_url" type="url" placeholder="https://example.com/final" />
         </label>
         <label>
-          備援/第二入口網址
+          備援檢查 URL
           <input name="secondary_url" type="url" placeholder="https://backup.example.com/health" />
         </label>
         <label>
-          最大跳轉次數
+          最大轉址數
           <input name="max_redirects" type="number" min="0" max="10" value="5" />
         </label>
         <label>
-          延遲警戒(ms)
+          延遲警戒值 (ms)
           <input name="latency_warn_ms" type="number" min="0" max="600000" value="5000" />
         </label>
         <label>
-          失敗門檻(連續次數)
+          連續失敗門檻
           <input name="fail_threshold" type="number" min="1" max="10" value="2" />
         </label>
         <label>
@@ -199,12 +202,12 @@
           <input name="retry_count" type="number" min="1" max="5" value="2" />
         </label>
         <label>
-          重試間隔(ms)
+          重試延遲 (ms)
           <input name="retry_delay_ms" type="number" min="0" max="10000" value="1200" />
         </label>
         <label class="check-item">
           <input name="allow_redirects" type="checkbox" checked />
-          <span>允許跳轉</span>
+          <span>允許自動轉址</span>
         </label>
         <button class="btn" type="submit">新增服務</button>
       </form>
@@ -213,30 +216,34 @@
 
     <section class="panel">
       <div class="panel-header">
-        <h2>Probe 管理</h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v4"></path><path d="M6.5 7.5 9 10"></path><path d="M17.5 7.5 15 10"></path><circle cx="12" cy="14" r="7"></circle><path d="M9 14h6"></path></svg></span><span>Probe 管理</span></h2>
         <div class="row-actions">
-          <button id="reloadProbesBtn" class="btn" type="button">重新整理</button>
+          <button id="reloadProbesBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
-      <p class="hint">顯示每台本機 probe 的在線狀態、最後心跳與最近一次執行結果。</p>
+      <p class="hint">檢視各 Probe 節點的線上狀態與最近執行摘要，必要時可標記離線或清除狀態。</p>
       <div id="adminProbesBody" class="probe-admin-list"></div>
       <p id="probesMessage" class="message"></p>
     </section>
 
     <section class="panel">
       <div class="panel-header">
-        <h2>服務管理</h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"></rect><rect x="4" y="14" width="16" height="5" rx="1.5"></rect><path d="M8 7.5h.01"></path><path d="M8 16.5h.01"></path></svg></span><span>服務管理</span></h2>
         <div class="row-actions">
-          <button id="runNowBtn" class="btn secondary" type="button">立即執行健康檢查</button>
-          <button id="reloadBtn" class="btn" type="button">重新整理</button>
+          <button id="runNowBtn" class="btn secondary" type="button">立即執行檢查</button>
+          <button id="reloadBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
-      <p class="hint">卡片主視圖只保留常用欄位，進階檢測規則收在可展開區塊，直接在卡片上編輯即可。</p>
+      <p class="hint">可直接編輯服務卡片中的欄位後儲存，也可手動執行單筆檢查、停用或永久刪除服務。</p>
       <div id="adminServicesBody" class="service-admin-list"></div>
       <p id="adminMessage" class="message"></p>
     </section>
   </main>
 
-<script type="module" src="./assets/admin.js?v=20260314-a028"></script>
+  <footer class="page-footer">
+    <small>Copyright © 2026 Server Monitor. All rights reserved.</small>
+  </footer>
+
+  <script type="module" src="./assets/admin.js?v=20260315-a059"></script>
 </body>
 </html>
