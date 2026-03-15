@@ -13,6 +13,9 @@ const reportForm = document.getElementById('reportForm');
 const reportMessage = document.getElementById('reportMessage');
 const reloadReportBtn = document.getElementById('reloadReportBtn');
 const sendReportNowBtn = document.getElementById('sendReportNowBtn');
+const portScanConfigForm = document.getElementById('portScanConfigForm');
+const portScanConfigMessage = document.getElementById('portScanConfigMessage');
+const reloadPortScanConfigBtn = document.getElementById('reloadPortScanConfigBtn');
 const deleteTestDataForm = document.getElementById('deleteTestDataForm');
 const deleteTestDataMessage = document.getElementById('deleteTestDataMessage');
 const deleteTestDataDateSelect = document.getElementById('deleteTestDataDateSelect');
@@ -51,6 +54,10 @@ function normalizeService(rawService) {
   service.fail_threshold = Math.max(1, Number(service.fail_threshold || 2) || 2);
   service.retry_count = Math.max(1, Math.min(5, Number(service.retry_count || 2) || 2));
   service.retry_delay_ms = Math.max(0, Math.min(10000, Number(service.retry_delay_ms || 1200) || 1200));
+  service.port_scan_enabled = isEnabled(service.port_scan_enabled);
+  service.port_scan_host = safeText(service.port_scan_host || '').trim();
+  service.port_scan_ports = safeText(service.port_scan_ports || '').trim();
+  service.port_scan_device_name = safeText(service.port_scan_device_name || '').trim();
   return service;
 }
 
@@ -72,6 +79,18 @@ function probeOnlineStateDisplay(probe) {
     online,
     label: online ? 'Online' : 'Offline'
   };
+}
+
+function formatPortScanPorts(probe) {
+  const ports = Array.isArray(probe?.latest_port_scan?.open_ports) ? probe.latest_port_scan.open_ports : [];
+  if (!ports.length) return '無開啟 ports';
+  return ports.join(', ');
+}
+
+function formatPortScanSummary(probe) {
+  const scan = probe?.latest_port_scan;
+  if (!scan) return '尚無 Port 掃描結果';
+  return `${safeText(scan.open_count || 0)} / ${safeText(scan.total_count || 0)} ports 開啟`;
 }
 
 function isHealthyServiceStatus(status) {
@@ -370,6 +389,10 @@ function serviceDefaults() {
     forbidden_keyword: '',
     expected_final_url: '',
     secondary_url: '',
+    port_scan_enabled: false,
+    port_scan_host: '',
+    port_scan_ports: '',
+    port_scan_device_name: '',
     allow_redirects: true,
     max_redirects: 5,
     latency_warn_ms: 5000,
@@ -471,6 +494,11 @@ probeCompactTemplateV2 = function probeCompactTemplateV2Safe(probe) {
   const errorText = escapeHtmlText(safeText(probe.last_run_error) || '');
   const versionText = escapeHtmlText(safeText(probe.probe_version) || '-');
   const appVersionText = probe.app_version ? ` / App ${escapeHtmlText(probe.app_version)}` : '';
+  const portScan = probe?.latest_port_scan || null;
+  const portScanHost = escapeHtmlText(safeText(portScan?.host) || safeText(probe.host_name) || '-');
+  const portScanTime = portScan?.scanned_at ? fmtDate(portScan.scanned_at) : '尚未掃描';
+  const portScanSummary = escapeHtmlText(formatPortScanSummary(probe));
+  const portScanPorts = escapeHtmlText(formatPortScanPorts(probe));
   return `
     <article class="probe-card probe-card-compact probe-card-compact-v2">
       <div class="probe-card-header">
@@ -497,6 +525,12 @@ probeCompactTemplateV2 = function probeCompactTemplateV2Safe(probe) {
       <div class="probe-compact-summary-row">
         <div class="probe-compact-summary"><span>Summary</span><strong class="log-cell-wrap">${summaryText}</strong></div>
         ${errorText && errorText !== '-' ? `<div class="probe-compact-summary probe-compact-error"><span>Error</span><strong class="log-cell-wrap">${errorText}</strong></div>` : ''}
+        <div class="probe-compact-summary probe-port-scan-summary">
+          <span>最近 Port 掃描</span>
+          <strong>${portScanSummary}</strong>
+          <small>主機 ${portScanHost} | 時間 ${portScanTime}</small>
+          <strong class="log-cell-wrap">${portScanPorts}</strong>
+        </div>
       </div>
     </article>
   `;
@@ -564,47 +598,47 @@ rowTemplate = function rowTemplateSafe(rawService) {
         </div>
 
         <details class="service-advanced">
-          <summary>Advanced settings</summary>
+          <summary>進階設定</summary>
           <div class="service-card-grid service-card-grid-compact">
             <label class="span-1">
-              Max redirects
+              最大重新導向次數
               <input data-field="max_redirects" data-id="${serviceId}" type="number" min="0" max="10" value="${escapeAttr(service.max_redirects)}" />
             </label>
             <label class="span-1">
-              Latency warn (ms)
+              延遲警示門檻 (ms)
               <input data-field="latency_warn_ms" data-id="${serviceId}" type="number" min="0" max="600000" value="${escapeAttr(service.latency_warn_ms)}" />
             </label>
             <label class="span-1">
-              Fail threshold
+              失敗判定門檻
               <input data-field="fail_threshold" data-id="${serviceId}" type="number" min="1" max="10" value="${escapeAttr(service.fail_threshold)}" />
             </label>
             <label class="span-1">
-              Retry count
+              重試次數
               <input data-field="retry_count" data-id="${serviceId}" type="number" min="1" max="5" value="${escapeAttr(service.retry_count)}" />
             </label>
             <label class="span-1">
-              Retry delay (ms)
+              重試間隔 (ms)
               <input data-field="retry_delay_ms" data-id="${serviceId}" type="number" min="0" max="10000" value="${escapeAttr(service.retry_delay_ms)}" />
             </label>
             <label class="check-item service-inline-check span-1">
               <input data-field="allow_redirects" data-id="${serviceId}" type="checkbox" ${allowRedirects ? 'checked' : ''} />
-              <span>Follow redirects</span>
+              <span>跟隨重新導向</span>
             </label>
             <label class="span-2">
-              Expected keyword
-              <input data-field="expected_keyword" data-id="${serviceId}" value="${escapeAttr(service.expected_keyword)}" placeholder="Optional keyword that must appear" />
+              預期關鍵字
+              <input data-field="expected_keyword" data-id="${serviceId}" value="${escapeAttr(service.expected_keyword)}" placeholder="選填，內容中必須出現的關鍵字" />
             </label>
             <label class="span-2">
-              Forbidden keyword
-              <input data-field="forbidden_keyword" data-id="${serviceId}" value="${escapeAttr(service.forbidden_keyword)}" placeholder="Optional keyword that must not appear" />
+              禁止關鍵字
+              <input data-field="forbidden_keyword" data-id="${serviceId}" value="${escapeAttr(service.forbidden_keyword)}" placeholder="選填，內容中不可出現的關鍵字" />
             </label>
             <label class="span-2">
-              Expected final URL
-              <input data-field="expected_final_url" data-id="${serviceId}" value="${escapeAttr(service.expected_final_url)}" placeholder="Optional URL after redirects" />
+              預期最終 URL
+              <input data-field="expected_final_url" data-id="${serviceId}" value="${escapeAttr(service.expected_final_url)}" placeholder="選填，重新導向後應到達的網址" />
             </label>
             <label class="span-2">
-              Secondary URL
-              <input data-field="secondary_url" data-id="${serviceId}" value="${escapeAttr(service.secondary_url)}" placeholder="Optional fallback or probe URL" />
+              次要 URL
+              <input data-field="secondary_url" data-id="${serviceId}" value="${escapeAttr(service.secondary_url)}" placeholder="選填，備援或 Probe 專用網址" />
             </label>
           </div>
         </details>
@@ -719,6 +753,64 @@ async function handleSendReportNow() {
   } catch (err) {
     reportMessage.textContent = `Failed to send report: ${safeText(err.message)}`;
   }
+}
+
+function applyPortScanConfig(cfg) {
+  if (!portScanConfigForm) return;
+  portScanConfigForm.elements.enabled.checked = String(cfg?.enabled).toLowerCase() === 'true' || cfg?.enabled === true;
+  portScanConfigForm.elements.ports.value = safeText(cfg?.ports || '');
+}
+
+async function loadPortScanConfig(onProgress) {
+  if (!portScanConfigForm) return null;
+  if (portScanConfigMessage) portScanConfigMessage.textContent = '正在載入 Port 掃描設定...';
+  if (typeof onProgress === 'function') onProgress(12);
+  try {
+    const res = await apiGet({ action: 'getPortScanConfig' }, 120000);
+    if (!res || res.ok === false) throw new Error(res?.error || 'getPortScanConfig failed');
+    if (typeof onProgress === 'function') onProgress(78);
+    applyPortScanConfig(res.data || {});
+    if (portScanConfigMessage) {
+      portScanConfigMessage.textContent = safeText(res.data?.enabled)
+        ? '全域 Port 掃描已啟用，Probe 會掃描本機指定 ports。'
+        : '全域 Port 掃描目前未啟用。';
+    }
+    if (typeof onProgress === 'function') onProgress(100);
+    return res.data || {};
+  } catch (err) {
+    if (portScanConfigMessage) portScanConfigMessage.textContent = `載入 Port 掃描設定失敗: ${safeText(err.message)}`;
+    if (typeof onProgress === 'function') onProgress(100);
+    return null;
+  }
+}
+
+async function handleSavePortScanConfig(event) {
+  event.preventDefault();
+  if (!portScanConfigForm) return;
+  if (portScanConfigMessage) portScanConfigMessage.textContent = '正在儲存 Port 掃描設定...';
+  try {
+    const payload = {
+      action: 'updatePortScanConfig',
+      enabled: portScanConfigForm.elements.enabled.checked,
+      ports: portScanConfigForm.elements.ports.value.trim()
+    };
+    const res = await apiPost(payload, 120000);
+    if (!res || res.ok === false) throw new Error(res?.error || 'updatePortScanConfig failed');
+    applyPortScanConfig(res.data || {});
+    if (portScanConfigMessage) {
+      portScanConfigMessage.textContent = safeText(res.data?.enabled)
+        ? '全域 Port 掃描設定已儲存，Probe 下次執行時會掃描本機 ports。'
+        : '全域 Port 掃描已停用。';
+    }
+  } catch (err) {
+    if (portScanConfigMessage) portScanConfigMessage.textContent = `儲存 Port 掃描設定失敗: ${safeText(err.message)}`;
+  }
+}
+
+async function handleReloadPortScanConfigWithOverlay() {
+  await runTransientLoading('正在重新載入 Port 掃描設定...', async (progress) => {
+    await loadPortScanConfig(progress);
+  });
 }
 
 async function handleProbeAction(event) {
@@ -856,6 +948,11 @@ function probeCompactTemplateV2(probe) {
   const errorText = escapeHtmlText(safeText(probe.last_run_error) || '');
   const versionText = escapeHtmlText(safeText(probe.probe_version) || '-');
   const appVersionText = probe.app_version ? ` / App ${escapeHtmlText(probe.app_version)}` : '';
+  const portScan = probe?.latest_port_scan || null;
+  const portScanHost = escapeHtmlText(safeText(portScan?.host) || safeText(probe.host_name) || '-');
+  const portScanTime = portScan?.scanned_at ? fmtDate(portScan.scanned_at) : '尚未掃描';
+  const portScanSummary = escapeHtmlText(formatPortScanSummary(probe));
+  const portScanPorts = escapeHtmlText(formatPortScanPorts(probe));
   return `
     <article class="probe-card probe-card-compact probe-card-compact-v2">
       <div class="probe-card-header">
@@ -882,6 +979,12 @@ function probeCompactTemplateV2(probe) {
       <div class="probe-compact-summary-row">
         <div class="probe-compact-summary"><span>Summary</span><strong class="log-cell-wrap">${summaryText}</strong></div>
         ${errorText && errorText !== '-' ? `<div class="probe-compact-summary probe-compact-error"><span>Error</span><strong class="log-cell-wrap">${errorText}</strong></div>` : ''}
+        <div class="probe-compact-summary probe-port-scan-summary">
+          <span>最近 Port 掃描</span>
+          <strong>${portScanSummary}</strong>
+          <small>主機 ${portScanHost} | 時間 ${portScanTime}</small>
+          <strong class="log-cell-wrap">${portScanPorts}</strong>
+        </div>
       </div>
     </article>
   `;
@@ -949,47 +1052,47 @@ function rowTemplate(rawService) {
         </div>
 
         <details class="service-advanced">
-          <summary>Advanced settings</summary>
+          <summary>進階設定</summary>
           <div class="service-card-grid service-card-grid-compact">
             <label class="span-1">
-              Max redirects
+              最大重新導向次數
               <input data-field="max_redirects" data-id="${serviceId}" type="number" min="0" max="10" value="${escapeAttr(service.max_redirects)}" />
             </label>
             <label class="span-1">
-              Latency warn (ms)
+              延遲警示門檻 (ms)
               <input data-field="latency_warn_ms" data-id="${serviceId}" type="number" min="0" max="600000" value="${escapeAttr(service.latency_warn_ms)}" />
             </label>
             <label class="span-1">
-              Fail threshold
+              失敗判定門檻
               <input data-field="fail_threshold" data-id="${serviceId}" type="number" min="1" max="10" value="${escapeAttr(service.fail_threshold)}" />
             </label>
             <label class="span-1">
-              Retry count
+              重試次數
               <input data-field="retry_count" data-id="${serviceId}" type="number" min="1" max="5" value="${escapeAttr(service.retry_count)}" />
             </label>
             <label class="span-1">
-              Retry delay (ms)
+              重試間隔 (ms)
               <input data-field="retry_delay_ms" data-id="${serviceId}" type="number" min="0" max="10000" value="${escapeAttr(service.retry_delay_ms)}" />
             </label>
             <label class="check-item service-inline-check span-1">
               <input data-field="allow_redirects" data-id="${serviceId}" type="checkbox" ${allowRedirects ? 'checked' : ''} />
-              <span>Follow redirects</span>
+              <span>跟隨重新導向</span>
             </label>
             <label class="span-2">
-              Expected keyword
-              <input data-field="expected_keyword" data-id="${serviceId}" value="${escapeAttr(service.expected_keyword)}" placeholder="Optional keyword that must appear" />
+              預期關鍵字
+              <input data-field="expected_keyword" data-id="${serviceId}" value="${escapeAttr(service.expected_keyword)}" placeholder="選填，內容中必須出現的關鍵字" />
             </label>
             <label class="span-2">
-              Forbidden keyword
-              <input data-field="forbidden_keyword" data-id="${serviceId}" value="${escapeAttr(service.forbidden_keyword)}" placeholder="Optional keyword that must not appear" />
+              禁止關鍵字
+              <input data-field="forbidden_keyword" data-id="${serviceId}" value="${escapeAttr(service.forbidden_keyword)}" placeholder="選填，內容中不可出現的關鍵字" />
             </label>
             <label class="span-2">
-              Expected final URL
-              <input data-field="expected_final_url" data-id="${serviceId}" value="${escapeAttr(service.expected_final_url)}" placeholder="Optional URL after redirects" />
+              預期最終 URL
+              <input data-field="expected_final_url" data-id="${serviceId}" value="${escapeAttr(service.expected_final_url)}" placeholder="選填，重新導向後應到達的網址" />
             </label>
             <label class="span-2">
-              Secondary URL
-              <input data-field="secondary_url" data-id="${serviceId}" value="${escapeAttr(service.secondary_url)}" placeholder="Optional fallback or probe URL" />
+              次要 URL
+              <input data-field="secondary_url" data-id="${serviceId}" value="${escapeAttr(service.secondary_url)}" placeholder="選填，備援或 Probe 專用網址" />
             </label>
           </div>
         </details>
@@ -1043,6 +1146,8 @@ if (adminBody) adminBody.addEventListener('click', handleTableClick);
 if (reportForm) reportForm.addEventListener('submit', handleSaveReport);
 if (reloadReportBtn) reloadReportBtn.addEventListener('click', handleReloadReportWithOverlay);
 if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendReportNow);
+if (portScanConfigForm) portScanConfigForm.addEventListener('submit', handleSavePortScanConfig);
+if (reloadPortScanConfigBtn) reloadPortScanConfigBtn.addEventListener('click', handleReloadPortScanConfigWithOverlay);
 if (deleteTestDataForm) deleteTestDataForm.addEventListener('submit', handleDeleteTestData);
 if (reloadDeleteDatesBtn) reloadDeleteDatesBtn.addEventListener('click', handleReloadDeleteDatesWithOverlay);
 
@@ -1053,8 +1158,9 @@ async function initFirstLoad() {
     const results = await Promise.allSettled([
       loadServices((p) => setLoadingProgress(8 + p * 0.46, '正在載入服務設定...')),
       loadProbes((p) => setLoadingProgress(54 + p * 0.16, '正在載入 Probe 狀態...')),
-      loadReportConfig((p) => setLoadingProgress(70 + p * 0.18, '正在載入報表設定...')),
-      loadChecksDates(false, (p) => setLoadingProgress(88 + p * 0.12, '正在載入日期資料...'))
+      loadReportConfig((p) => setLoadingProgress(70 + p * 0.11, '正在載入報表設定...')),
+      loadPortScanConfig((p) => setLoadingProgress(81 + p * 0.09, '正在載入 Port 掃描設定...')),
+      loadChecksDates(false, (p) => setLoadingProgress(90 + p * 0.10, '正在載入日期資料...'))
     ]);
     const failedCount = results.filter((item) => item.status === 'rejected').length;
     finishFirstLoadOverlay('載入完成', 100);
