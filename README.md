@@ -113,5 +113,4 @@ Output:
 
 - `dist/monitor-local-probe.vbs`
 - `dist/probe-config.json`
-- `dist/support/monitor-local-probe-core.exe`
-- `dist/support/monitor-local-probe-ui.ps1`
+- `dist/monitor-local-probe-ui.ps1`

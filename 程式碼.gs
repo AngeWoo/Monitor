@@ -37,6 +37,7 @@ const NOTIFY_LOG_HEADERS = [
 ];
 
 const PROP_REPORT_CONFIG = "REPORT_CONFIG";
+const PROP_PORT_SCAN_CONFIG = "PORT_SCAN_CONFIG";
 const PROP_REPORT_LAST_SLOT = "REPORT_LAST_SLOT";
 const PROP_DASHBOARD_URL = "DASHBOARD_URL";
 const PROP_LINE_TARGETS = "LINE_TARGETS";
@@ -50,6 +51,7 @@ const TEST_DELETE_DEFAULT_SHEET = SHEET_CHECKS;
 const SERVICE_HEADERS = [
   "id", "name", "url", "interval_min", "enabled",
   "check_type", "expected_keyword", "forbidden_keyword", "expected_final_url", "secondary_url",
+  "port_scan_enabled", "port_scan_host", "port_scan_ports", "port_scan_device_name",
   "allow_redirects", "max_redirects", "latency_warn_ms", "fail_threshold", "retry_count", "retry_delay_ms",
   "last_check_at", "last_status", "last_http_code", "last_error_type", "last_error", "last_final_url",
   "consecutive_failures", "last_latency_ms",
@@ -179,6 +181,10 @@ function doGet(e) {
           forbidden_keyword: p.forbidden_keyword,
           expected_final_url: p.expected_final_url,
           secondary_url: p.secondary_url,
+          port_scan_enabled: p.port_scan_enabled !== undefined ? toBool_(p.port_scan_enabled) : undefined,
+          port_scan_host: p.port_scan_host,
+          port_scan_ports: p.port_scan_ports,
+          port_scan_device_name: p.port_scan_device_name,
           allow_redirects: p.allow_redirects,
           max_redirects: p.max_redirects,
           latency_warn_ms: p.latency_warn_ms,
@@ -199,6 +205,10 @@ function doGet(e) {
           forbidden_keyword: p.forbidden_keyword,
           expected_final_url: p.expected_final_url,
           secondary_url: p.secondary_url,
+          port_scan_enabled: p.port_scan_enabled !== undefined ? toBool_(p.port_scan_enabled) : undefined,
+          port_scan_host: p.port_scan_host,
+          port_scan_ports: p.port_scan_ports,
+          port_scan_device_name: p.port_scan_device_name,
           allow_redirects: p.allow_redirects !== undefined ? toBool_(p.allow_redirects) : undefined,
           max_redirects: p.max_redirects !== undefined ? toNum_(p.max_redirects, 5) : undefined,
           latency_warn_ms: p.latency_warn_ms !== undefined ? toNum_(p.latency_warn_ms, 5000) : undefined,
@@ -219,8 +229,14 @@ function doGet(e) {
       case "getReportConfig":
         result = { ok: true, data: getReportConfigForClient_() };
         break;
+      case "getPortScanConfig":
+        result = { ok: true, data: getPortScanConfig_() };
+        break;
       case "updateReportConfig":
         result = updateReportConfig_(p);
+        break;
+      case "updatePortScanConfig":
+        result = updatePortScanConfig_(p);
         break;
       case "sendReportNow":
         result = sendStatusReportNow_();
@@ -300,8 +316,14 @@ function doPost(e) {
       case "getReportConfig":
         result = { ok: true, data: getReportConfigForClient_() };
         break;
+      case "getPortScanConfig":
+        result = { ok: true, data: getPortScanConfig_() };
+        break;
       case "updateReportConfig":
         result = updateReportConfig_(body);
+        break;
+      case "updatePortScanConfig":
+        result = updatePortScanConfig_(body);
         break;
       case "sendReportNow":
         result = sendStatusReportNow_();
@@ -468,6 +490,10 @@ function defaultServiceCheckConfig_() {
     forbidden_keyword: "",
     expected_final_url: "",
     secondary_url: "",
+    port_scan_enabled: false,
+    port_scan_host: "",
+    port_scan_ports: "",
+    port_scan_device_name: "",
     allow_redirects: true,
     max_redirects: 5,
     latency_warn_ms: 5000,
@@ -506,6 +532,10 @@ function applyRecommendedServiceSettingsIfNeeded_() {
     "forbidden_keyword",
     "expected_final_url",
     "secondary_url",
+    "port_scan_enabled",
+    "port_scan_host",
+    "port_scan_ports",
+    "port_scan_device_name",
     "allow_redirects",
     "max_redirects",
     "latency_warn_ms",
@@ -561,6 +591,10 @@ function normalizeServiceConfig_(source) {
   merged.forbidden_keyword = String(merged.forbidden_keyword || "").trim();
   merged.expected_final_url = String(merged.expected_final_url || "").trim();
   merged.secondary_url = String(merged.secondary_url || "").trim();
+  merged.port_scan_enabled = toBool_(merged.port_scan_enabled);
+  merged.port_scan_host = String(merged.port_scan_host || "").trim();
+  merged.port_scan_ports = String(merged.port_scan_ports || "").trim();
+  merged.port_scan_device_name = String(merged.port_scan_device_name || "").trim();
   merged.allow_redirects = toBool_(merged.allow_redirects);
   merged.max_redirects = Math.max(0, Math.min(10, toNum_(merged.max_redirects, 5)));
   merged.latency_warn_ms = Math.max(0, toNum_(merged.latency_warn_ms, 5000));
@@ -868,6 +902,10 @@ function addService_(b) {
     forbidden_keyword: cfg.forbidden_keyword,
     expected_final_url: cfg.expected_final_url,
     secondary_url: cfg.secondary_url,
+    port_scan_enabled: cfg.port_scan_enabled,
+    port_scan_host: cfg.port_scan_host,
+    port_scan_ports: cfg.port_scan_ports,
+    port_scan_device_name: cfg.port_scan_device_name,
     allow_redirects: cfg.allow_redirects,
     max_redirects: cfg.max_redirects,
     latency_warn_ms: cfg.latency_warn_ms,
@@ -913,6 +951,10 @@ function updateService_(b) {
     if (b.forbidden_keyword !== undefined && idx.forbidden_keyword !== undefined) sh.getRange(r + 1, idx.forbidden_keyword + 1).setValue(String(b.forbidden_keyword || "").trim());
     if (b.expected_final_url !== undefined && idx.expected_final_url !== undefined) sh.getRange(r + 1, idx.expected_final_url + 1).setValue(String(b.expected_final_url || "").trim());
     if (b.secondary_url !== undefined && idx.secondary_url !== undefined) sh.getRange(r + 1, idx.secondary_url + 1).setValue(String(b.secondary_url || "").trim());
+    if (b.port_scan_enabled !== undefined && idx.port_scan_enabled !== undefined) sh.getRange(r + 1, idx.port_scan_enabled + 1).setValue(!!b.port_scan_enabled);
+    if (b.port_scan_host !== undefined && idx.port_scan_host !== undefined) sh.getRange(r + 1, idx.port_scan_host + 1).setValue(String(b.port_scan_host || "").trim());
+    if (b.port_scan_ports !== undefined && idx.port_scan_ports !== undefined) sh.getRange(r + 1, idx.port_scan_ports + 1).setValue(String(b.port_scan_ports || "").trim());
+    if (b.port_scan_device_name !== undefined && idx.port_scan_device_name !== undefined) sh.getRange(r + 1, idx.port_scan_device_name + 1).setValue(String(b.port_scan_device_name || "").trim());
     if (b.allow_redirects !== undefined && idx.allow_redirects !== undefined) sh.getRange(r + 1, idx.allow_redirects + 1).setValue(!!b.allow_redirects);
     if (b.max_redirects !== undefined && idx.max_redirects !== undefined) sh.getRange(r + 1, idx.max_redirects + 1).setValue(Math.max(0, Math.min(10, toNum_(b.max_redirects, 5))));
     if (b.latency_warn_ms !== undefined && idx.latency_warn_ms !== undefined) sh.getRange(r + 1, idx.latency_warn_ms + 1).setValue(Math.max(0, toNum_(b.latency_warn_ms, 5000)));
@@ -1319,9 +1361,30 @@ function listProbes_() {
   if (!sh) return { ok: true, data: [] };
   ensureHeaders_(sh, PROBE_HEADERS);
   var values = sh.getDataRange().getValues();
-  return values.length < 2
-    ? { ok: true, data: [] }
-    : { ok: true, data: values.slice(1).map(function(r) { return objFromRow_(values[0], r); }) };
+  if (values.length < 2) return { ok: true, data: [] };
+
+  var portScanMap = readPortScansMap_();
+  var data = values.slice(1).map(function(r) {
+    var probe = objFromRow_(values[0], r);
+    var keys = [
+      String(probe.host_name || "").trim(),
+      String(probe.probe_name || "").trim(),
+      String(probe.probe_id || "").trim()
+    ].filter(function(item, index, arr) {
+      return !!item && arr.indexOf(item) === index;
+    });
+    var latestPortScan = null;
+    for (var i = 0; i < keys.length; i++) {
+      if (portScanMap[keys[i]]) {
+        latestPortScan = cloneRecord_(portScanMap[keys[i]]);
+        latestPortScan.device_name = keys[i];
+        break;
+      }
+    }
+    probe.latest_port_scan = latestPortScan;
+    return probe;
+  });
+  return { ok: true, data: data };
 }
 
 function upsertProbe_(payload) {
@@ -1989,6 +2052,39 @@ function getReportConfig_() {
   } catch (_) {
     return defaultReportConfig_();
   }
+}
+
+function defaultPortScanConfig_() {
+  return {
+    enabled: false,
+    ports: ""
+  };
+}
+
+function normalizePortScanConfig_(cfg) {
+  const out = Object.assign({}, defaultPortScanConfig_(), cfg || {});
+  out.enabled = toBool_(out.enabled);
+  out.ports = String(out.ports || "").trim();
+  return out;
+}
+
+function getPortScanConfig_() {
+  const raw = PropertiesService.getScriptProperties().getProperty(PROP_PORT_SCAN_CONFIG);
+  if (!raw) return defaultPortScanConfig_();
+  try {
+    return normalizePortScanConfig_(JSON.parse(raw));
+  } catch (_) {
+    return defaultPortScanConfig_();
+  }
+}
+
+function updatePortScanConfig_(payload) {
+  const cfg = normalizePortScanConfig_({
+    enabled: payload && payload.enabled,
+    ports: payload && payload.ports
+  });
+  PropertiesService.getScriptProperties().setProperty(PROP_PORT_SCAN_CONFIG, JSON.stringify(cfg));
+  return { ok: true, data: cfg };
 }
 
 function normalizeReportConfig_(cfg) {

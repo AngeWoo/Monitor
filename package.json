@@ -6,7 +6,8 @@
   "bin": "local-probe.js",
   "scripts": {
     "probe:run": "node local-probe.js",
-    "probe:build:win": "pkg local-probe.js --targets node18-win-x64 --output dist/monitor-local-probe.exe"
+    "probe:sync-dist": "node -e \"require('fs').copyFileSync('local-probe.js','dist/local-probe.js')\"",
+    "probe:build:win": "pkg local-probe.js --targets node18-win-x64 --output dist/monitor-local-probe.exe && npm run probe:sync-dist"
   },
   "devDependencies": {
     "pkg": "^5.8.1"

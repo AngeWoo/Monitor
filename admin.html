@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Server Monitor Admin</title>
+  <title>Server Monitor 管理設定</title>
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260315-a049" />
-  <link rel="stylesheet" href="./assets/style.css?v=20260315-a061" />
+  <link rel="stylesheet" href="./assets/style.css?v=20260315-a062" />
 </head>
 <body class="page-admin">
   <div id="loadingOverlay" class="loading-overlay">
@@ -17,22 +17,24 @@
       <div class="loading-bar"><div id="loadingBarInner" class="loading-bar-inner"></div></div>
     </div>
   </div>
+
   <div class="bg-gradient"></div>
+
   <header class="topbar">
     <div class="brand-lockup">
-      <a class="brand-home" href="./index.html" aria-label="回到儀表板">
+      <a class="brand-home" href="./index.html" aria-label="返回儀表板">
         <img class="brand-logo" src="./assets/favicon.svg?v=20260315-a049" alt="Server Monitor logo" />
       </a>
       <div class="brand-copy">
         <span class="brand-eyebrow">Infrastructure Observability</span>
         <h1>Server Monitor</h1>
-        <p>管理設定 &nbsp;<span id="hostBadge" class="host-badge" title="目前使用中的後端位址"></span></p>
+        <p>管理設定 <span id="hostBadge" class="host-badge" title="目前載入中的主機資訊"></span></p>
       </div>
     </div>
     <nav>
       <a href="./index.html">儀表板</a>
       <a class="active" href="./admin.html">管理設定</a>
-      <a href="./health.html">健康檢視</a>
+      <a href="./health.html">健康檢查</a>
     </nav>
   </header>
 
@@ -55,7 +57,7 @@
           <input name="recipients" placeholder="ops@example.com, dev@example.com" />
         </label>
         <label class="report-col-mode">
-          通知模式
+          通知方式
           <select name="notify_mode">
             <option value="mail">僅 Mail</option>
             <option value="mail_line">Mail + LINE</option>
@@ -70,7 +72,7 @@
           </select>
         </label>
         <label class="report-col-daily-hour">
-          每日發送小時 (0-23)
+          每日發送時間 (0-23)
           <input name="daily_hour" type="number" min="0" max="23" value="9" />
         </label>
         <div class="check-row report-col-options">
@@ -89,9 +91,9 @@
         </label>
         <label class="report-col-line-to">
           LINE To
-          <input name="line_to" placeholder="可填單一 ID、多個 ID，或 JSON 陣列" />
+          <input name="line_to" placeholder="使用者 ID、群組 ID 或 JSON 設定" />
         </label>
-        <p id="lineUserStats" class="message report-inline-note">正在載入 LINE 對象統計...</p>
+        <p id="lineUserStats" class="message report-inline-note">正在載入 LINE 目標資訊...</p>
         <div class="report-actions report-col-submit">
           <button class="btn report-save-btn" type="submit">儲存報表設定</button>
         </div>
@@ -101,7 +103,33 @@
 
     <section class="panel">
       <div class="panel-header">
-        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M10 11v5"></path><path d="M14 11v5"></path><path d="M6 7l1 12h10l1-12"></path><path d="M9 7V4h6v3"></path></svg></span><span>刪除測試資料</span></h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 6h12v4H6z"></path><path d="M6 14h12v4H6z"></path><path d="M9 8h.01"></path><path d="M9 16h.01"></path><path d="M13 8h2"></path><path d="M13 16h2"></path></svg></span><span>Port 掃描設定</span></h2>
+        <div class="row-actions">
+          <button id="reloadPortScanConfigBtn" class="btn" type="button">重新載入</button>
+        </div>
+      </div>
+      <form id="portScanConfigForm" class="port-scan-config-grid">
+        <div class="port-scan-config-main">
+          <label class="check-item port-scan-toggle">
+            <input name="enabled" type="checkbox" />
+            <span>啟用全域 Port 掃描</span>
+          </label>
+          <label class="port-scan-config-field">
+            共用 Port 清單
+            <input name="ports" placeholder="例如 22,80,443,3389 或 8000-8010" />
+          </label>
+        </div>
+        <div class="port-scan-config-actions">
+          <button class="btn report-save-btn" type="submit">儲存 Port 掃描設定</button>
+        </div>
+        <p class="message report-inline-note port-scan-config-note">所有上線中的 Probe 主機都會套用這組 ports，掃描本機 localhost，結果各自回寫到 Google Sheet。</p>
+      </form>
+      <p id="portScanConfigMessage" class="message"></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M10 11v5"></path><path d="M14 11v5"></path><path d="M6 7l1 12h10l1-12"></path><path d="M9 7V4h6v3"></path></svg></span><span>測試資料清理</span></h2>
         <div class="row-actions">
           <span id="deleteTestDataDatesInfo" class="hint"></span>
           <button id="reloadDeleteDatesBtn" class="btn tiny secondary" type="button">重新載入日期</button>
@@ -109,20 +137,20 @@
       </div>
       <form id="deleteTestDataForm" class="test-data-grid">
         <label>
-          選擇可刪除日期
+          可刪除日期
           <select id="deleteTestDataDateSelect" name="date_select">
             <option value="">-- 請選擇日期 --</option>
           </select>
         </label>
         <label>
-          或手動指定日期
+          或手動輸入日期
           <input name="date_manual" type="date" />
         </label>
-        <button id="deleteTestDataSubmitBtn" class="btn danger" type="submit">刪除指定日期資料</button>
+        <button id="deleteTestDataSubmitBtn" class="btn danger" type="submit">刪除該日測試資料</button>
       </form>
       <div id="deleteProgressWrap" class="hidden" style="margin-top:10px;">
         <div class="loading-text">
-          <span>刪除中...</span>
+          <span>正在刪除資料...</span>
           <strong id="deleteProgressPct">0%</strong>
         </div>
         <div class="loading-bar"><div id="deleteProgressBar" class="loading-bar-inner"></div></div>
@@ -132,22 +160,22 @@
 
     <section class="panel">
       <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg></span><span>新增服務</span></h2>
-      <p class="hint service-defaults-intro">以下欄位會作為新服務的初始設定。新增後仍可在服務管理卡片中再調整。</p>
+      <p class="hint service-defaults-intro">新增後會依照預設建議值進行檢查，後續可在服務卡內調整更多細節。</p>
       <div class="service-defaults-grid">
-        <div><strong>服務名稱</strong><span>顯示於列表與報表中的名稱</span></div>
-        <div><strong>URL</strong><span>主要監控的目標網址</span></div>
+        <div><strong>服務名稱</strong><span>用於識別監控項目與報表顯示</span></div>
+        <div><strong>URL</strong><span>要檢查的目標網址</span></div>
         <div><strong>檢查間隔</strong><span>預設 5 分鐘</span></div>
-        <div><strong>檢查類型</strong><span>可選 HTTP 狀態碼或關鍵字</span></div>
-        <div><strong>必須包含關鍵字</strong><span>當選用關鍵字檢查時使用</span></div>
-        <div><strong>禁止關鍵字</strong><span>當內容中出現時視為異常</span></div>
-        <div><strong>預期最終 URL</strong><span>驗證轉址後的最終位址</span></div>
-        <div><strong>備援檢查 URL</strong><span>可作為備援或 Probe 專用位址</span></div>
-        <div><strong>允許自動轉址</strong><span>預設啟用</span></div>
-        <div><strong>最大轉址數</strong><span>預設 5 次</span></div>
-        <div><strong>延遲警戒值</strong><span>預設 5000 ms</span></div>
-        <div><strong>連續失敗門檻</strong><span>預設 2 次後視為異常</span></div>
+        <div><strong>檢查類型</strong><span>支援 HTTP 狀態碼與關鍵字</span></div>
+        <div><strong>預期關鍵字</strong><span>頁面內容必須包含的文字</span></div>
+        <div><strong>禁止關鍵字</strong><span>頁面內容不可出現的文字</span></div>
+        <div><strong>預期最終 URL</strong><span>重新導向後應到達的網址</span></div>
+        <div><strong>次要 URL</strong><span>備援或 Probe 專用檢查網址</span></div>
+        <div><strong>跟隨重新導向</strong><span>預設啟用</span></div>
+        <div><strong>最大重新導向次數</strong><span>預設 5 次</span></div>
+        <div><strong>延遲警示門檻</strong><span>預設 5000 ms</span></div>
+        <div><strong>失敗判定門檻</strong><span>預設連續 2 次失敗才視為異常</span></div>
         <div><strong>重試次數</strong><span>預設 2 次</span></div>
-        <div><strong>重試延遲</strong><span>預設 1200 ms</span></div>
+        <div><strong>重試間隔</strong><span>預設 1200 ms</span></div>
       </div>
       <form id="addForm" class="form-grid service-add-grid">
         <label>
@@ -170,7 +198,7 @@
           </select>
         </label>
         <label>
-          必須包含關鍵字
+          預期關鍵字
           <input name="expected_keyword" placeholder="例如 Welcome / OK / healthy" />
         </label>
         <label>
@@ -182,19 +210,19 @@
           <input name="expected_final_url" type="url" placeholder="https://example.com/final" />
         </label>
         <label>
-          備援檢查 URL
+          次要 URL
           <input name="secondary_url" type="url" placeholder="https://backup.example.com/health" />
         </label>
         <label>
-          最大轉址數
+          最大重新導向次數
           <input name="max_redirects" type="number" min="0" max="10" value="5" />
         </label>
         <label>
-          延遲警戒值 (ms)
+          延遲警示門檻 (ms)
           <input name="latency_warn_ms" type="number" min="0" max="600000" value="5000" />
         </label>
         <label>
-          連續失敗門檻
+          失敗判定門檻
           <input name="fail_threshold" type="number" min="1" max="10" value="2" />
         </label>
         <label>
@@ -202,12 +230,12 @@
           <input name="retry_count" type="number" min="1" max="5" value="2" />
         </label>
         <label>
-          重試延遲 (ms)
+          重試間隔 (ms)
           <input name="retry_delay_ms" type="number" min="0" max="10000" value="1200" />
         </label>
         <label class="check-item">
           <input name="allow_redirects" type="checkbox" checked />
-          <span>允許自動轉址</span>
+          <span>跟隨重新導向</span>
         </label>
         <button class="btn" type="submit">新增服務</button>
       </form>
@@ -216,12 +244,12 @@
 
     <section class="panel">
       <div class="panel-header">
-        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v4"></path><path d="M6.5 7.5 9 10"></path><path d="M17.5 7.5 15 10"></path><circle cx="12" cy="14" r="7"></circle><path d="M9 14h6"></path></svg></span><span>Probe 管理</span></h2>
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v4"></path><path d="M6.5 7.5 9 10"></path><path d="M17.5 7.5 15 10"></path><circle cx="12" cy="14" r="7"></circle><path d="M9 14h6"></path></svg></span><span>Probe 節點</span></h2>
         <div class="row-actions">
           <button id="reloadProbesBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
-      <p class="hint">檢視各 Probe 節點的線上狀態與最近執行摘要，必要時可標記離線或清除狀態。</p>
+      <p class="hint">這裡會顯示所有 Probe 節點的最近狀態。當 Probe 上線後，會依全域 Port 掃描設定掃描本機 ports 並回寫結果。</p>
       <div id="adminProbesBody" class="probe-admin-list"></div>
       <p id="probesMessage" class="message"></p>
     </section>
@@ -234,7 +262,7 @@
           <button id="reloadBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
-      <p class="hint">可直接編輯服務卡片中的欄位後儲存，也可手動執行單筆檢查、停用或永久刪除服務。</p>
+      <p class="hint">這裡顯示所有服務的目前狀態與設定，可直接儲存、重新檢查、停用或移除。</p>
       <div id="adminServicesBody" class="service-admin-list"></div>
       <p id="adminMessage" class="message"></p>
     </section>
@@ -244,6 +272,6 @@
     <small>Copyright © 2026 Server Monitor. All rights reserved.</small>
   </footer>
 
-  <script type="module" src="./assets/admin.js?v=20260315-a062"></script>
+  <script type="module" src="./assets/admin.js?v=20260315-a066"></script>
 </body>
 </html>
