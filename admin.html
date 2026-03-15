@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Server Monitor 管理設定</title>
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260315-a049" />
-  <link rel="stylesheet" href="./assets/style.css?v=20260315-a062" />
+<link rel="stylesheet" href="./assets/style.css?v=20260316-a067" />
 </head>
 <body class="page-admin">
   <div id="loadingOverlay" class="loading-overlay">
@@ -43,6 +43,7 @@
       <div class="panel-header">
         <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m4 7 8 6 8-6"></path></svg></span><span>報表設定</span></h2>
         <div class="row-actions">
+          <button id="startPortScanBtn" class="btn secondary" type="button">開始掃描 Port</button>
           <button id="sendReportNowBtn" class="btn secondary" type="button">立即發送報表</button>
           <button id="reloadReportBtn" class="btn" type="button">重新載入</button>
         </div>
@@ -105,6 +106,7 @@
       <div class="panel-header">
         <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 6h12v4H6z"></path><path d="M6 14h12v4H6z"></path><path d="M9 8h.01"></path><path d="M9 16h.01"></path><path d="M13 8h2"></path><path d="M13 16h2"></path></svg></span><span>Port 掃描設定</span></h2>
         <div class="row-actions">
+          <button id="triggerPortScanBtn" class="btn secondary" type="button">開始掃描 Port</button>
           <button id="reloadPortScanConfigBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
@@ -122,7 +124,7 @@
         <div class="port-scan-config-actions">
           <button class="btn report-save-btn" type="submit">儲存 Port 掃描設定</button>
         </div>
-        <p class="message report-inline-note port-scan-config-note">所有上線中的 Probe 主機都會套用這組 ports，掃描本機 localhost，結果各自回寫到 Google Sheet。</p>
+        <p class="message report-inline-note port-scan-config-note">所有上線中的 Probe 都會套用這組 ports，掃描各服務主機，結果各自回寫到 Google Sheet。</p>
       </form>
       <p id="portScanConfigMessage" class="message"></p>
     </section>
@@ -249,7 +251,7 @@
           <button id="reloadProbesBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
-      <p class="hint">這裡會顯示所有 Probe 節點的最近狀態。當 Probe 上線後，會依全域 Port 掃描設定掃描本機 ports 並回寫結果。</p>
+      <p class="hint">這裡會顯示所有 Probe 節點的最近狀態。當 Probe 上線後，會依全域 Port 掃描設定掃描各服務主機並回寫結果。</p>
       <div id="adminProbesBody" class="probe-admin-list"></div>
       <p id="probesMessage" class="message"></p>
     </section>
@@ -272,6 +274,6 @@
     <small>Copyright © 2026 Server Monitor. All rights reserved.</small>
   </footer>
 
-  <script type="module" src="./assets/admin.js?v=20260315-a066"></script>
+  <script type="module" src="./assets/admin.js?v=20260316-a067"></script>
 </body>
 </html>

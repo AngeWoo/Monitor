@@ -285,6 +285,27 @@ function parsePortList(rawValue) {
   return [...ports].sort((left, right) => left - right);
 }
 
+function deriveServicePortScanHost(service) {
+  const candidates = [
+    safeText(service && service.secondary_url).trim(),
+    safeText(service && service.url).trim()
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const parsed = new URL(candidate);
+      const host = String(parsed.hostname || "").trim();
+      if (host) return host;
+    } catch (_) {}
+  }
+  return "";
+}
+
+function buildServicePortScanDeviceName(service) {
+  const serviceId = String(service && service.id || "").trim();
+  if (serviceId) return `service:${serviceId}`;
+  return `service:${safeText(service && service.name || service && service.url || "unknown").trim() || "unknown"}`;
+}
+
 function scanTcpPort(host, port, timeoutMs) {
   return new Promise((resolve) => {
     const socket = new net.Socket();
@@ -338,6 +359,7 @@ async function runPortScanOnce() {
   const writeResponse = await apiPost({
     action: "updatePortScan",
     device_name: deviceName,
+    probe_id: RUNTIME.probeId,
     host,
     open_ports: openPorts.join(","),
     scanned_at: scannedAt,
@@ -359,57 +381,96 @@ async function runPortScanOnce() {
   }, null, 2));
 }
 
-async function runGlobalPortScanIfEnabled() {
+async function runGlobalPortScanIfEnabled(services) {
   const config = getPortScanConfig ? await getPortScanConfig() : {};
   if (!toBool(config.enabled)) {
-    return null;
+    return [];
   }
 
   const ports = parsePortList(config.ports);
   if (!ports.length) {
-    return {
+    return [{
       ok: false,
       skipped: true,
       reason: "Missing valid global port scan ports"
-    };
+    }];
   }
 
-  const targetHost = "127.0.0.1";
-  const displayHost = String(RUNTIME.metadata.host_name || os.hostname() || "localhost").trim();
-  const deviceName = String(RUNTIME.metadata.host_name || RUNTIME.probeName || RUNTIME.probeId || displayHost).trim();
-  const scannedAt = new Date().toISOString();
+  const enabledServices = Array.isArray(services)
+    ? services.filter((item) => String(item && item.id || "").trim())
+    : [];
+  if (!enabledServices.length) {
+    return [];
+  }
+
   const timeoutMs = Math.max(500, Math.min(RUNTIME.requestTimeoutMs, DEFAULT_PORT_SCAN_TIMEOUT_MS));
-  const results = [];
+  const hostScanCache = new Map();
+  const scanResults = [];
 
-  console.log(`[PORT_SCAN_AUTO] device=${deviceName} host=${displayHost} ports=${ports.join(",")}`);
-  for (const port of ports) {
-    const result = await scanTcpPort(targetHost, port, timeoutMs);
-    results.push(result);
-    console.log(`[PORT_SCAN_AUTO] ${displayHost}:${port} ${String(result.status || "").toUpperCase()}`);
+  for (const service of enabledServices) {
+    const serviceId = String(service.id || "").trim();
+    const serviceName = String(service.name || service.url || serviceId).trim() || serviceId;
+    const targetHost = deriveServicePortScanHost(service);
+    if (!targetHost) {
+      scanResults.push({
+        ok: false,
+        skipped: true,
+        serviceId,
+        serviceName,
+        reason: "Missing valid service host"
+      });
+      continue;
+    }
+
+    let hostScan = hostScanCache.get(targetHost);
+    if (!hostScan) {
+      const scannedAt = new Date().toISOString();
+      const hostResults = [];
+      console.log(`[PORT_SCAN_AUTO] host=${targetHost} ports=${ports.join(",")}`);
+      for (const port of ports) {
+        const result = await scanTcpPort(targetHost, port, timeoutMs);
+        hostResults.push(result);
+        console.log(`[PORT_SCAN_AUTO] ${targetHost}:${port} ${String(result.status || "").toUpperCase()}`);
+      }
+      const openPorts = hostResults.filter((item) => item.status === "open").map((item) => item.port);
+      hostScan = {
+        host: targetHost,
+        scannedAt,
+        openPorts,
+        totalCount: ports.length
+      };
+      hostScanCache.set(targetHost, hostScan);
+    }
+
+    const writeResponse = await apiPost({
+      action: "updatePortScan",
+      device_name: buildServicePortScanDeviceName(service),
+      service_id: serviceId,
+      service_name: serviceName,
+      probe_id: RUNTIME.probeId,
+      host: hostScan.host,
+      open_ports: hostScan.openPorts.join(","),
+      scanned_at: hostScan.scannedAt,
+      open_count: hostScan.openPorts.length,
+      total_count: hostScan.totalCount
+    });
+    if (!writeResponse || !writeResponse.ok) {
+      throw new Error(writeResponse && writeResponse.error ? writeResponse.error : `updatePortScan failed for ${serviceName}`);
+    }
+
+    scanResults.push({
+      ok: true,
+      serviceId,
+      serviceName,
+      deviceName: buildServicePortScanDeviceName(service),
+      host: hostScan.host,
+      openPorts: hostScan.openPorts,
+      totalCount: hostScan.totalCount,
+      scannedAt: hostScan.scannedAt
+    });
   }
 
-  const openPorts = results.filter((item) => item.status === "open").map((item) => item.port);
-  const writeResponse = await apiPost({
-    action: "updatePortScan",
-    device_name: deviceName,
-    host: displayHost,
-    open_ports: openPorts.join(","),
-    scanned_at: scannedAt,
-    open_count: openPorts.length,
-    total_count: ports.length
-  });
-  if (!writeResponse || !writeResponse.ok) {
-    throw new Error(writeResponse && writeResponse.error ? writeResponse.error : "updatePortScan failed");
-  }
-
-  return {
-    ok: true,
-    deviceName,
-    host: displayHost,
-    openPorts,
-    totalCount: ports.length,
-    scannedAt
-  };
+  return scanResults;
 }
 
 async function upsertProbe(payload) {
@@ -1292,9 +1353,9 @@ async function runProbeOnce() {
   }
 
   try {
-    const scanResult = await runGlobalPortScanIfEnabled();
-    if (scanResult) {
-      portScanResults.push(scanResult);
+    const scanResults = await runGlobalPortScanIfEnabled(services);
+    if (Array.isArray(scanResults) && scanResults.length) {
+      portScanResults.push(...scanResults);
     }
   } catch (error) {
     portScanErrors.push(`GLOBAL_PORT_SCAN: ${error.message || error}`);

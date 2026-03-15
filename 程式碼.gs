@@ -15,7 +15,8 @@ const SHEET_NOTIFY_LOGS = "notify_logs";
 const API_KEY = "";
 
 const PORT_SCAN_HEADERS = [
-  "device_name", "host", "open_ports", "scanned_at", "open_count", "total_count"
+  "device_name", "service_id", "service_name", "probe_id",
+  "host", "open_ports", "scanned_at", "open_count", "total_count"
 ];
 
 const NOTIFY_LOG_HEADERS = [
@@ -43,6 +44,7 @@ const PROP_DASHBOARD_URL = "DASHBOARD_URL";
 const PROP_LINE_TARGETS = "LINE_TARGETS";
 const PROP_SERVICE_RECOMMENDATION_MIGRATION = "SERVICE_RECOMMENDED_SETTINGS_V1";
 const PROP_PROBE_RUN_SIGNAL = "PROBE_RUN_SIGNAL";
+const PROP_PORT_SCAN_SIGNAL = "PORT_SCAN_SIGNAL";
 const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
 const PROBE_RESULT_GRACE_MS = 2 * 60 * 1000;
 
@@ -164,6 +166,12 @@ function doGet(e) {
         break;
       case "getProbeRunSignal":
         result = getProbeRunSignal_();
+        break;
+      case "getPortScanSignal":
+        result = getPortScanSignal_();
+        break;
+      case "requestPortScanSignal":
+        result = requestPortScanSignal_(p);
         break;
       case "listServices":
         result = listServices_();
@@ -378,6 +386,12 @@ function doPost(e) {
         break;
       case "getProbeRunSignal":
         result = getProbeRunSignal_();
+        break;
+      case "getPortScanSignal":
+        result = getPortScanSignal_();
+        break;
+      case "requestPortScanSignal":
+        result = requestPortScanSignal_(body);
         break;
       default:
         result = { ok: false, error: "Unknown action" };
@@ -1075,9 +1089,20 @@ function listServices_() {
   var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
   ensureHeaders_(sh, SERVICE_HEADERS);
   var values = sh.getDataRange().getValues();
+  var latestPortScansByService = readPortScansByServiceId_();
   var result = values.length < 2
     ? { ok: true, data: [] }
-    : { ok: true, data: buildServiceViews_(values.slice(1).map(function(r) { return objFromRow_(values[0], r); })) };
+    : {
+        ok: true,
+        data: buildServiceViews_(values.slice(1).map(function(r) { return objFromRow_(values[0], r); }))
+          .map(function(view) {
+            var serviceId = String(view.id || "").trim();
+            view.latest_port_scan = serviceId && latestPortScansByService[serviceId]
+              ? cloneRecord_(latestPortScansByService[serviceId])
+              : null;
+            return view;
+          })
+      };
   try { cache.put(CACHE_KEY_SERVICES, JSON.stringify(result), CACHE_TTL_SERVICES); } catch (_) {}
   return result;
 }
@@ -1527,6 +1552,31 @@ function getProbeRunSignal_() {
   }
 }
 
+function requestPortScanSignal_(payload) {
+  var props = PropertiesService.getScriptProperties();
+  var signal = {
+    requested_at: new Date().toISOString(),
+    requested_by: String((payload && payload.requested_by) || "system").trim() || "system",
+    note: String((payload && payload.note) || "admin port scan").trim() || "admin port scan"
+  };
+  props.setProperty(PROP_PORT_SCAN_SIGNAL, JSON.stringify(signal));
+  return {
+    ok: true,
+    data: signal,
+    online_probe_count: getOnlineProbes_(Date.now()).length
+  };
+}
+
+function getPortScanSignal_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(PROP_PORT_SCAN_SIGNAL);
+  if (!raw) return { ok: true, data: null };
+  try {
+    return { ok: true, data: JSON.parse(raw) };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
 /**
  * Combined init: returns services + metricsAll + checksDateRange in one call.
  * Minimises JSONP round trips and benefits from all server-side caches.
@@ -1548,6 +1598,9 @@ function updatePortScan_(payload) {
   var openCount  = Number(payload.open_count  || 0);
   var totalCount = Number(payload.total_count || 0);
   var host       = String(payload.host        || '').trim();
+  var serviceId  = String(payload.service_id  || '').trim();
+  var serviceName = String(payload.service_name || '').trim();
+  var probeId    = String(payload.probe_id    || '').trim();
 
   var lastRow = sh.getLastRow();
   if (lastRow >= 2) {
@@ -1556,13 +1609,21 @@ function updatePortScan_(payload) {
     var col    = sh.getLastColumn();
     var data   = sh.getRange(2, 1, lastRow - 1, col).getValues();
     for (var r = 0; r < data.length; r++) {
-      if (String(data[r][idx.device_name] || '').trim() === deviceName) {
+      var rowServiceId = idx.service_id !== undefined ? String(data[r][idx.service_id] || '').trim() : '';
+      var rowDeviceName = idx.device_name !== undefined ? String(data[r][idx.device_name] || '').trim() : '';
+      var matched = serviceId ? rowServiceId === serviceId : rowDeviceName === deviceName;
+      if (matched) {
         var rowNum = r + 2; // 1-based, +1 for header
+        if (idx.device_name !== undefined) sh.getRange(rowNum, idx.device_name + 1).setValue(deviceName);
+        if (idx.service_id !== undefined) sh.getRange(rowNum, idx.service_id + 1).setValue(serviceId);
+        if (idx.service_name !== undefined) sh.getRange(rowNum, idx.service_name + 1).setValue(serviceName);
+        if (idx.probe_id !== undefined) sh.getRange(rowNum, idx.probe_id + 1).setValue(probeId);
         sh.getRange(rowNum, idx.host       + 1).setValue(host);
         sh.getRange(rowNum, idx.open_ports + 1).setValue(openPorts);
         sh.getRange(rowNum, idx.scanned_at + 1).setValue(scannedAt);
         sh.getRange(rowNum, idx.open_count + 1).setValue(openCount);
         sh.getRange(rowNum, idx.total_count+ 1).setValue(totalCount);
+        invalidateServicesCache_();
         return { ok: true, updated: true };
       }
     }
@@ -1571,10 +1632,15 @@ function updatePortScan_(payload) {
   // No existing row — append
   var header2 = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   sh.appendRow(rowFromObj_(header2, {
-    device_name: deviceName, host: host,
+    device_name: deviceName,
+    service_id: serviceId,
+    service_name: serviceName,
+    probe_id: probeId,
+    host: host,
     open_ports:  openPorts,  scanned_at: scannedAt,
     open_count:  openCount,  total_count: totalCount
   }));
+  invalidateServicesCache_();
   return { ok: true, created: true };
 }
 
@@ -1597,10 +1663,43 @@ function readPortScansMap_() {
       ? portsStr.split(',').map(function(p) { return Number(p.trim()); }).filter(function(n) { return n > 0; })
       : [];
     map[name] = {
+      service_id: idx.service_id !== undefined ? String(row[idx.service_id] || '').trim() : '',
+      service_name: idx.service_name !== undefined ? String(row[idx.service_name] || '').trim() : '',
+      probe_id: idx.probe_id !== undefined ? String(row[idx.probe_id] || '').trim() : '',
       host:        String(row[idx.host]        || ''),
       open_ports:  ports,
       scanned_at:  row[idx.scanned_at]         || null,
       open_count:  Number(row[idx.open_count]  || 0),
+      total_count: Number(row[idx.total_count] || 0)
+    };
+  }
+  return map;
+}
+
+function readPortScansByServiceId_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_PORT_SCANS);
+  if (!sh || sh.getLastRow() < 2) return {};
+  var values = sh.getDataRange().getValues();
+  var idx = indexMap_(values[0]);
+  if (idx.service_id === undefined) return {};
+  var map = {};
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var serviceId = String(row[idx.service_id] || '').trim();
+    if (!serviceId) continue;
+    var portsStr = String(row[idx.open_ports] || '').trim();
+    var ports = portsStr
+      ? portsStr.split(',').map(function(p) { return Number(p.trim()); }).filter(function(n) { return n > 0; })
+      : [];
+    map[serviceId] = {
+      device_name: String(row[idx.device_name] || '').trim(),
+      service_id: serviceId,
+      service_name: idx.service_name !== undefined ? String(row[idx.service_name] || '').trim() : '',
+      probe_id: idx.probe_id !== undefined ? String(row[idx.probe_id] || '').trim() : '',
+      host: String(row[idx.host] || '').trim(),
+      open_ports: ports,
+      scanned_at: row[idx.scanned_at] || null,
+      open_count: Number(row[idx.open_count] || 0),
       total_count: Number(row[idx.total_count] || 0)
     };
   }
