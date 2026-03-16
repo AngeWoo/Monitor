@@ -15,6 +15,7 @@ const reloadReportBtn = document.getElementById('reloadReportBtn');
 const sendReportNowBtn = document.getElementById('sendReportNowBtn');
 const portScanConfigForm = document.getElementById('portScanConfigForm');
 const portScanConfigMessage = document.getElementById('portScanConfigMessage');
+const portScanRequestLog = document.getElementById('portScanRequestLog');
 const reloadPortScanConfigBtn = document.getElementById('reloadPortScanConfigBtn');
 const triggerPortScanBtn = document.getElementById('triggerPortScanBtn');
 const misplacedStartPortScanBtn = document.getElementById('startPortScanBtn');
@@ -36,12 +37,17 @@ const loadingBarInner = document.getElementById('loadingBarInner');
 const CLICK_LOADING_MIN_MS = 380;
 const DATES_CACHE_KEY = 'monitor_checks_dates_v1';
 const DATES_CACHE_TTL_MS = 5 * 60 * 1000;
+const PORT_SCAN_WATCH_INTERVAL_MS = 3000;
+const PORT_SCAN_WATCH_TIMEOUT_MS = 180000;
+const PORT_SCAN_LOG_LIMIT = 60;
 
 let services = [];
 let probes = [];
 let firstLoadPending = true;
 let deleteProgressTimer = null;
 let deleteProgressValue = 0;
+let portScanWatchToken = 0;
+let portScanLogLines = [];
 const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
 
 if (misplacedStartPortScanBtn) {
@@ -133,6 +139,135 @@ function renderProbes() {
     return;
   }
   probesBody.innerHTML = probes.map((probe) => probeCompactTemplateV2(probe)).join('');
+}
+
+function renderPortScanRequestLog() {
+  if (!portScanRequestLog) return;
+  portScanRequestLog.textContent = portScanLogLines.length
+    ? portScanLogLines.join('\n')
+    : '按下「開始掃描 Port」後，這裡會顯示回報紀錄。';
+  portScanRequestLog.scrollTop = portScanRequestLog.scrollHeight;
+}
+
+function resetPortScanRequestLog() {
+  portScanLogLines = [];
+  renderPortScanRequestLog();
+}
+
+function appendPortScanRequestLog(message, timestamp) {
+  const label = safeText(timestamp || new Date().toLocaleTimeString('zh-TW', { hour12: false }));
+  portScanLogLines.push(`[${label}] ${safeText(message)}`);
+  if (portScanLogLines.length > PORT_SCAN_LOG_LIMIT) {
+    portScanLogLines = portScanLogLines.slice(-PORT_SCAN_LOG_LIMIT);
+  }
+  renderPortScanRequestLog();
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function formatPortScanSessionTime(rawValue) {
+  const date = rawValue ? new Date(rawValue) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return new Date().toLocaleTimeString('zh-TW', { hour12: false });
+  }
+  return date.toLocaleTimeString('zh-TW', { hour12: false });
+}
+
+function buildPortScanSessionMarker(session) {
+  if (!session) return '';
+  return [
+    safeText(session.request_id || ''),
+    safeText(session.updated_at || ''),
+    safeText(session.status || ''),
+    Array.isArray(session.log_lines) ? session.log_lines.length : 0
+  ].join('|');
+}
+
+function formatPortScanSessionLogLine(entry) {
+  const probeLabel = safeText(entry?.probe_id || '');
+  const levelLabel = safeText(entry?.level || '').toUpperCase();
+  const suffix = [probeLabel, levelLabel].filter(Boolean).join(' | ');
+  return suffix ? `${safeText(entry?.message || '')} (${suffix})` : safeText(entry?.message || '');
+}
+
+async function fetchPortScanSession() {
+  const res = await apiGet({ action: 'getPortScanSignal' }, 120000);
+  if (!res || res.ok === false) throw new Error(res?.error || 'getPortScanSignal failed');
+  return res.data || null;
+}
+
+async function watchPortScanRequest(meta) {
+  const watchToken = ++portScanWatchToken;
+  const requestId = safeText(meta?.requestId || '');
+  const onlineProbeCount = Math.max(0, Number(meta?.onlineProbeCount || 0) || 0);
+  const startedAt = Date.now();
+  let pollRound = 0;
+  let lastMarker = '';
+  let lastLogCount = 0;
+  let sawRunning = false;
+  let sawCompletion = false;
+
+  appendPortScanRequestLog(
+    onlineProbeCount > 0
+      ? `已送出 Port 掃描要求，等待 ${onlineProbeCount} 個上線 Probe 回報。`
+      : '已送出 Port 掃描要求，但目前沒有偵測到上線中的 Probe。'
+  );
+
+  while (watchToken === portScanWatchToken && Date.now() - startedAt < PORT_SCAN_WATCH_TIMEOUT_MS) {
+    pollRound += 1;
+    try {
+      const session = await fetchPortScanSession();
+      if (!session) {
+        appendPortScanRequestLog('目前找不到 Port Scan session。');
+        break;
+      }
+      if (requestId && safeText(session.request_id || '') !== requestId) {
+        appendPortScanRequestLog('偵測到較新的 Port Scan 要求，停止追蹤本次 session。');
+        break;
+      }
+
+      const marker = buildPortScanSessionMarker(session);
+      const logs = Array.isArray(session.log_lines) ? session.log_lines : [];
+      if (marker !== lastMarker) {
+        for (let index = lastLogCount; index < logs.length; index += 1) {
+          const entry = logs[index];
+          appendPortScanRequestLog(formatPortScanSessionLogLine(entry), formatPortScanSessionTime(entry?.at));
+        }
+        lastLogCount = logs.length;
+        lastMarker = marker;
+      } else if (pollRound === 1 || pollRound % 3 === 0) {
+        appendPortScanRequestLog(`第 ${pollRound} 次輪詢：session 仍在 ${safeText(session.status || 'pending')}。`);
+      }
+
+      if (safeText(session.status || '') === 'running') {
+        sawRunning = true;
+      }
+      if (safeText(session.status || '') === 'completed' || safeText(session.status || '') === 'failed') {
+        sawCompletion = true;
+        await Promise.allSettled([loadServices(), loadProbes()]);
+        if (session.result_summary) {
+          appendPortScanRequestLog(session.result_summary, formatPortScanSessionTime(session.completed_at));
+        }
+        break;
+      }
+    } catch (error) {
+      appendPortScanRequestLog(`輪詢失敗: ${safeText(error?.message || error)}`);
+    }
+
+    if (watchToken !== portScanWatchToken) break;
+    await delay(PORT_SCAN_WATCH_INTERVAL_MS);
+  }
+
+  if (watchToken !== portScanWatchToken) return;
+  if (!sawCompletion) {
+    appendPortScanRequestLog(
+      sawRunning
+        ? '追蹤時間到，Port Scan 可能仍在進行中。'
+        : '追蹤結束，尚未看到 Probe claim 這次 Port Scan request。'
+    );
+  }
 }
 
 async function loadServices(onProgress) {
@@ -820,6 +955,7 @@ async function handleReloadPortScanConfigWithOverlay() {
 }
 
 async function handleRequestPortScanWithOverlay() {
+  let requestMeta = null;
   await runTransientLoading('正在通知 Probe 重新掃描 Port...', async (progress) => {
     progress(14);
     const res = await apiPost({
@@ -830,6 +966,11 @@ async function handleRequestPortScanWithOverlay() {
     if (!res || res.ok === false) throw new Error(res?.error || 'requestPortScanSignal failed');
 
     const onlineProbeCount = Math.max(0, Number(res.online_probe_count || 0) || 0);
+    requestMeta = {
+      requestId: safeText(res.data?.request_id || ''),
+      requestedAt: safeText(res.data?.requested_at || new Date().toISOString()),
+      onlineProbeCount
+    };
     progress(34);
 
     if (onlineProbeCount > 0) {
@@ -849,6 +990,11 @@ async function handleRequestPortScanWithOverlay() {
         : '目前沒有上線中的 Probe，可先確認 Probe 視窗是否在線。';
     }
   });
+  portScanWatchToken += 1;
+  resetPortScanRequestLog();
+  if (requestMeta) {
+    void watchPortScanRequest(requestMeta);
+  }
 }
 
 async function handleProbeAction(event) {

@@ -2,6 +2,7 @@
 
 const summaryEl = document.getElementById('summary');
 const tbody = document.getElementById('servicesBody');
+const portScansBody = document.getElementById('portScansBody');
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingLabel = document.getElementById('loadingLabel');
 const loadingPercent = document.getElementById('loadingPercent');
@@ -35,6 +36,7 @@ const HISTORY_PAGE_SIZE = 10;
 const ALL_SERVICES_ID = '__ALL__';
 
 let services = [];
+let portScans = [];
 let selectedId = null;
 let latencyChart;
 let uptimeChart;
@@ -296,6 +298,43 @@ function formatPortScanCell(service) {
   const host = escapeHtml(safeText(scan.host || ''));
   const title = host ? `${host} | ${scannedAt}` : scannedAt;
   return `<span class="port-scan-value" title="${escapeAttr(title)}">${content}</span>`;
+}
+
+function formatPortScanListCell(scan) {
+  const ports = Array.isArray(scan?.open_ports) ? scan.open_ports : [];
+  if (!ports.length) return '<span class="port-scan-value is-empty">無開啟</span>';
+  return `<span class="port-scan-value">${escapeHtml(ports.join(', '))}</span>`;
+}
+
+function getPortScanDisplayName(scan) {
+  const serviceName = safeText(scan?.service_name || '');
+  const deviceName = safeText(scan?.device_name || '');
+  return serviceName || deviceName || '-';
+}
+
+function renderPortScansTable() {
+  if (!portScansBody) return;
+  if (!portScans.length) {
+    portScansBody.innerHTML = '<tr><td colspan="6">尚無 Port 掃描資料</td></tr>';
+    return;
+  }
+
+  portScansBody.innerHTML = portScans.map((scan) => {
+    const scope = safeText(scan.scope) === 'service' ? '服務' : '裝置';
+    const displayName = getPortScanDisplayName(scan);
+    const host = safeText(scan.host || '-') || '-';
+    const probeId = safeText(scan.probe_id || '-') || '-';
+    const scannedAt = fmtDate(scan.scanned_at);
+    return `
+      <tr>
+        <td data-label="類型">${escapeHtml(scope)}</td>
+        <td data-label="名稱">${escapeHtml(displayName)}</td>
+        <td data-label="Host">${escapeHtml(host)}</td>
+        <td data-label="開啟 Ports">${formatPortScanListCell(scan)}</td>
+        <td data-label="掃描時間">${escapeHtml(scannedAt)}</td>
+        <td data-label="Probe">${escapeHtml(probeId)}</td>
+      </tr>`;
+  }).join('');
 }
 
 function getServiceRangeText(rows) {
@@ -966,8 +1005,12 @@ async function loadServices() {
   if (firstPaintLoad) setLoadingProgress(5, '讀取服務清單...');
 
   try {
-    const result = await apiGet({ action: 'listServices' });
-    services = result.data || [];
+    const [servicesResult, portScansResult] = await Promise.all([
+      apiGet({ action: 'listServices' }),
+      apiGet({ action: 'listPortScans' }).catch(() => ({ ok: false, data: [] }))
+    ]);
+    services = servicesResult.data || [];
+    portScans = portScansResult && portScansResult.ok ? (portScansResult.data || []) : [];
     if (firstPaintLoad) setLoadingProgress(25, '整理服務資料...');
 
     if (!selectedId) {
@@ -979,6 +1022,7 @@ async function loadServices() {
 
     renderSummary();
     renderTable();
+    renderPortScansTable();
     let dateRangeProgress = 0;
 
     if (firstPaintLoad) {
