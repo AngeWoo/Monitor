@@ -173,8 +173,20 @@ function doGet(e) {
       case "requestPortScanSignal":
         result = requestPortScanSignal_(p);
         break;
+      case "claimPortScanSignal":
+        result = claimPortScanSignal_(p);
+        break;
+      case "appendPortScanSignalLog":
+        result = appendPortScanSignalLog_(p);
+        break;
+      case "completePortScanSignal":
+        result = completePortScanSignal_(p);
+        break;
       case "listServices":
         result = listServices_();
+        break;
+      case "listPortScans":
+        result = listPortScans_();
         break;
       case "metrics":
         result = getMetrics_(p.serviceId, toNum_(p.hours, 24));
@@ -375,6 +387,9 @@ function doPost(e) {
       case "listProbes":
         result = listProbes_();
         break;
+      case "listPortScans":
+        result = listPortScans_();
+        break;
       case "markProbeOffline":
         result = markProbeOffline_(body);
         break;
@@ -392,6 +407,15 @@ function doPost(e) {
         break;
       case "requestPortScanSignal":
         result = requestPortScanSignal_(body);
+        break;
+      case "claimPortScanSignal":
+        result = claimPortScanSignal_(body);
+        break;
+      case "appendPortScanSignalLog":
+        result = appendPortScanSignalLog_(body);
+        break;
+      case "completePortScanSignal":
+        result = completePortScanSignal_(body);
         break;
       default:
         result = { ok: false, error: "Unknown action" };
@@ -1553,28 +1577,202 @@ function getProbeRunSignal_() {
 }
 
 function requestPortScanSignal_(payload) {
-  var props = PropertiesService.getScriptProperties();
-  var signal = {
-    requested_at: new Date().toISOString(),
-    requested_by: String((payload && payload.requested_by) || "system").trim() || "system",
-    note: String((payload && payload.note) || "admin port scan").trim() || "admin port scan"
-  };
-  props.setProperty(PROP_PORT_SCAN_SIGNAL, JSON.stringify(signal));
+  var requestedBy = String((payload && payload.requested_by) || "system").trim() || "system";
+  var note = String((payload && payload.note) || "admin port scan").trim() || "admin port scan";
+  var cfg = getPortScanConfig_();
+  var request = withPortScanSignalLock_(function(session) {
+    if (session && ["pending", "running"].indexOf(String(session.status || "").trim()) !== -1) {
+      return session;
+    }
+    var requestedAt = new Date().toISOString();
+    var nextSession = {
+      request_id: Utilities.getUuid(),
+      status: "pending",
+      requested_at: requestedAt,
+      requested_by: requestedBy,
+      note: note,
+      ports: String(cfg && cfg.ports || "").trim(),
+      updated_at: requestedAt,
+      claimed_by: "",
+      claimed_at: "",
+      started_at: "",
+      completed_at: "",
+      result_summary: "",
+      error: "",
+      log_lines: [
+        {
+          at: requestedAt,
+          level: "info",
+          probe_id: "",
+          message: "Port scan requested by " + requestedBy
+        }
+      ]
+    };
+    writePortScanSessionUnsafe_(nextSession);
+    return nextSession;
+  });
   return {
     ok: true,
-    data: signal,
+    data: request,
     online_probe_count: getOnlineProbes_(Date.now()).length
   };
 }
 
 function getPortScanSignal_() {
-  var raw = PropertiesService.getScriptProperties().getProperty(PROP_PORT_SCAN_SIGNAL);
-  if (!raw) return { ok: true, data: null };
+  return { ok: true, data: readPortScanSessionUnsafe_() };
+}
+
+function claimPortScanSignal_(payload) {
+  var probeId = String((payload && payload.probe_id) || "").trim();
+  if (!probeId) return { ok: false, error: "Missing probe_id" };
+  var probeName = String((payload && payload.probe_name) || probeId).trim() || probeId;
+  var nowIso = new Date().toISOString();
+  var result = withPortScanSignalLock_(function(session) {
+    if (!session || session.status !== "pending") return null;
+    session.status = "running";
+    session.claimed_by = probeId;
+    session.claimed_at = nowIso;
+    session.started_at = nowIso;
+    session.updated_at = nowIso;
+    appendPortScanSessionLogUnsafe_(session, {
+      at: nowIso,
+      level: "info",
+      probe_id: probeId,
+      message: "Claimed by probe " + probeName
+    });
+    writePortScanSessionUnsafe_(session);
+    return session;
+  });
+  return { ok: true, data: result };
+}
+
+function appendPortScanSignalLog_(payload) {
+  var requestId = String((payload && payload.request_id) || "").trim();
+  var message = String((payload && payload.message) || "").trim();
+  if (!requestId) return { ok: false, error: "Missing request_id" };
+  if (!message) return { ok: false, error: "Missing message" };
+  var probeId = String((payload && payload.probe_id) || "").trim();
+  var level = String((payload && payload.level) || "info").trim() || "info";
+  var nowIso = new Date().toISOString();
+  var session = withPortScanSignalLock_(function(current) {
+    if (!current || String(current.request_id || "").trim() !== requestId) {
+      return null;
+    }
+    current.updated_at = nowIso;
+    appendPortScanSessionLogUnsafe_(current, {
+      at: nowIso,
+      level: level,
+      probe_id: probeId,
+      message: message
+    });
+    writePortScanSessionUnsafe_(current);
+    return current;
+  });
+  if (!session) return { ok: false, error: "Port scan request not found" };
+  return { ok: true, data: session };
+}
+
+function completePortScanSignal_(payload) {
+  var requestId = String((payload && payload.request_id) || "").trim();
+  if (!requestId) return { ok: false, error: "Missing request_id" };
+  var probeId = String((payload && payload.probe_id) || "").trim();
+  var status = String((payload && payload.status) || "").trim().toLowerCase();
+  if (!status) status = payload && payload.ok === false ? "failed" : "completed";
+  var resultSummary = String((payload && payload.result_summary) || "").trim();
+  var errorText = String((payload && payload.error) || "").trim();
+  var nowIso = new Date().toISOString();
+  var session = withPortScanSignalLock_(function(current) {
+    if (!current || String(current.request_id || "").trim() !== requestId) {
+      return null;
+    }
+    current.status = status;
+    current.completed_at = nowIso;
+    current.updated_at = nowIso;
+    current.result_summary = resultSummary;
+    current.error = errorText;
+    appendPortScanSessionLogUnsafe_(current, {
+      at: nowIso,
+      level: status === "failed" ? "error" : "info",
+      probe_id: probeId,
+      message: resultSummary || (status === "failed" ? "Port scan failed" : "Port scan completed")
+    });
+    writePortScanSessionUnsafe_(current);
+    return current;
+  });
+  if (!session) return { ok: false, error: "Port scan request not found" };
+  return { ok: true, data: session };
+}
+
+function withPortScanSignalLock_(callback) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(5000);
   try {
-    return { ok: true, data: JSON.parse(raw) };
-  } catch (err) {
-    return { ok: false, error: String(err) };
+    return callback(readPortScanSessionUnsafe_());
+  } finally {
+    lock.releaseLock();
   }
+}
+
+function readPortScanSessionUnsafe_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(PROP_PORT_SCAN_SIGNAL);
+  if (!raw) return null;
+  try {
+    return normalizePortScanSession_(JSON.parse(raw));
+  } catch (_) {
+    return null;
+  }
+}
+
+function writePortScanSessionUnsafe_(session) {
+  var props = PropertiesService.getScriptProperties();
+  if (!session) {
+    props.deleteProperty(PROP_PORT_SCAN_SIGNAL);
+    return;
+  }
+  props.setProperty(PROP_PORT_SCAN_SIGNAL, JSON.stringify(normalizePortScanSession_(session)));
+}
+
+function normalizePortScanSession_(session) {
+  var normalized = cloneRecord_(session || {});
+  normalized.request_id = String(normalized.request_id || "").trim();
+  normalized.status = String(normalized.status || "pending").trim() || "pending";
+  normalized.requested_at = String(normalized.requested_at || "").trim();
+  normalized.requested_by = String(normalized.requested_by || "").trim();
+  normalized.note = String(normalized.note || "").trim();
+  normalized.ports = String(normalized.ports || "").trim();
+  normalized.updated_at = String(normalized.updated_at || "").trim();
+  normalized.claimed_by = String(normalized.claimed_by || "").trim();
+  normalized.claimed_at = String(normalized.claimed_at || "").trim();
+  normalized.started_at = String(normalized.started_at || "").trim();
+  normalized.completed_at = String(normalized.completed_at || "").trim();
+  normalized.result_summary = String(normalized.result_summary || "").trim();
+  normalized.error = String(normalized.error || "").trim();
+  normalized.log_lines = Array.isArray(normalized.log_lines)
+    ? normalized.log_lines.map(function(line) {
+        return {
+          at: String(line && line.at || "").trim(),
+          level: String(line && line.level || "info").trim() || "info",
+          probe_id: String(line && line.probe_id || "").trim(),
+          message: String(line && line.message || "").trim()
+        };
+      }).filter(function(line) { return !!line.message; }).slice(-120)
+    : [];
+  return normalized;
+}
+
+function appendPortScanSessionLogUnsafe_(session, entry) {
+  if (!session.log_lines || !Array.isArray(session.log_lines)) {
+    session.log_lines = [];
+  }
+  session.log_lines.push({
+    at: String(entry && entry.at || new Date().toISOString()).trim(),
+    level: String(entry && entry.level || "info").trim() || "info",
+    probe_id: String(entry && entry.probe_id || "").trim(),
+    message: String(entry && entry.message || "").trim()
+  });
+  session.log_lines = session.log_lines.filter(function(line) {
+    return !!String(line && line.message || "").trim();
+  }).slice(-120);
 }
 
 /**
@@ -1591,9 +1789,10 @@ function updatePortScan_(payload) {
 
   var ss = SpreadsheetApp.getActive();
   var sh = ss.getSheetByName(SHEET_PORT_SCANS);
-  if (!sh) { sh = ss.insertSheet(SHEET_PORT_SCANS); ensureHeaders_(sh, PORT_SCAN_HEADERS); }
+  if (!sh) { sh = ss.insertSheet(SHEET_PORT_SCANS); }
+  ensureHeaders_(sh, PORT_SCAN_HEADERS);
 
-  var openPorts  = String(payload.open_ports  || '').trim();
+  var openPorts  = formatOpenPortsForStorage_(payload.open_ports);
   var scannedAt  = String(payload.scanned_at  || new Date().toISOString()).trim();
   var openCount  = Number(payload.open_count  || 0);
   var totalCount = Number(payload.total_count || 0);
@@ -1619,12 +1818,16 @@ function updatePortScan_(payload) {
         if (idx.service_name !== undefined) sh.getRange(rowNum, idx.service_name + 1).setValue(serviceName);
         if (idx.probe_id !== undefined) sh.getRange(rowNum, idx.probe_id + 1).setValue(probeId);
         sh.getRange(rowNum, idx.host       + 1).setValue(host);
-        sh.getRange(rowNum, idx.open_ports + 1).setValue(openPorts);
+        if (idx.open_ports !== undefined) {
+          var openPortsRange = sh.getRange(rowNum, idx.open_ports + 1);
+          openPortsRange.setNumberFormat("@");
+          openPortsRange.setValue(openPorts);
+        }
         sh.getRange(rowNum, idx.scanned_at + 1).setValue(scannedAt);
         sh.getRange(rowNum, idx.open_count + 1).setValue(openCount);
         sh.getRange(rowNum, idx.total_count+ 1).setValue(totalCount);
         invalidateServicesCache_();
-        return { ok: true, updated: true };
+        return { ok: true, updated: true, row_num: rowNum, device_name: deviceName, sheet_name: SHEET_PORT_SCANS };
       }
     }
   }
@@ -1640,8 +1843,98 @@ function updatePortScan_(payload) {
     open_ports:  openPorts,  scanned_at: scannedAt,
     open_count:  openCount,  total_count: totalCount
   }));
+  var appendedRowNum = sh.getLastRow();
+  var idx2 = indexMap_(header2);
+  if (idx2.open_ports !== undefined) {
+    var appendedOpenPortsRange = sh.getRange(appendedRowNum, idx2.open_ports + 1);
+    appendedOpenPortsRange.setNumberFormat("@");
+    appendedOpenPortsRange.setValue(openPorts);
+  }
   invalidateServicesCache_();
-  return { ok: true, created: true };
+  return { ok: true, created: true, row_num: appendedRowNum, device_name: deviceName, sheet_name: SHEET_PORT_SCANS };
+}
+
+function formatOpenPortsForStorage_(rawValue) {
+  var ports = parseOpenPortsValue_(rawValue, 0);
+  return ports.length ? ports.join(",") : "";
+}
+
+function parseOpenPortsValue_(rawValue, expectedCount) {
+  if (Array.isArray(rawValue)) {
+    return rawValue.map(function(item) {
+      return Number(item);
+    }).filter(function(item) {
+      return Number.isFinite(item) && item >= 1 && item <= 65535;
+    });
+  }
+
+  var text = String(rawValue || "").trim();
+  if (!text) return [];
+
+  if (/[,\s;|]/.test(text)) {
+    return text.split(/[\s,;|]+/).map(function(item) {
+      return Number(String(item || "").trim());
+    }).filter(function(item) {
+      return Number.isFinite(item) && item >= 1 && item <= 65535;
+    });
+  }
+
+  var numeric = Number(text);
+  if ((!expectedCount || expectedCount <= 1) && Number.isFinite(numeric) && numeric >= 1 && numeric <= 65535) {
+    return [numeric];
+  }
+
+  if (/^\d+$/.test(text) && Number(expectedCount || 0) > 1) {
+    var splitPorts = splitConcatenatedPorts_(text, Number(expectedCount));
+    if (splitPorts.length) return splitPorts;
+  }
+
+  return Number.isFinite(numeric) && numeric >= 1 && numeric <= 65535 ? [numeric] : [];
+}
+
+function splitConcatenatedPorts_(digits, expectedCount) {
+  var commonPorts = {
+    "20": true, "21": true, "22": true, "23": true, "25": true, "53": true, "67": true, "68": true,
+    "69": true, "80": true, "88": true, "110": true, "123": true, "135": true, "139": true, "143": true,
+    "161": true, "389": true, "443": true, "445": true, "465": true, "587": true, "993": true, "995": true,
+    "1433": true, "1521": true, "2049": true, "2375": true, "3000": true, "3306": true, "3389": true,
+    "5000": true, "5432": true, "5601": true, "5900": true, "6379": true, "7001": true, "8000": true,
+    "8080": true, "8443": true, "9000": true, "9090": true, "9200": true, "9418": true
+  };
+  var best = null;
+
+  function scorePorts(ports) {
+    return ports.reduce(function(total, port) {
+      var key = String(port);
+      return total + (commonPorts[key] ? 100 : 0) + key.length;
+    }, 0);
+  }
+
+  function search(offset, remain, current) {
+    if (remain === 0) {
+      if (offset !== digits.length) return;
+      var score = scorePorts(current);
+      if (!best || score > best.score) {
+        best = { score: score, ports: current.slice() };
+      }
+      return;
+    }
+    var minRemainDigits = remain - 1;
+    var maxSegmentLength = Math.min(5, digits.length - offset - minRemainDigits);
+    for (var len = 1; len <= maxSegmentLength; len++) {
+      var part = digits.slice(offset, offset + len);
+      if (!part) continue;
+      if (part.length > 1 && part.charAt(0) === "0") continue;
+      var value = Number(part);
+      if (!Number.isFinite(value) || value < 1 || value > 65535) continue;
+      current.push(value);
+      search(offset + len, remain - 1, current);
+      current.pop();
+    }
+  }
+
+  search(0, expectedCount, []);
+  return best && Array.isArray(best.ports) ? best.ports : [];
 }
 
 /**
@@ -1658,10 +1951,8 @@ function readPortScansMap_() {
     var row  = values[r];
     var name = String(row[idx.device_name] || '').trim();
     if (!name) continue;
-    var portsStr = String(row[idx.open_ports] || '').trim();
-    var ports = portsStr
-      ? portsStr.split(',').map(function(p) { return Number(p.trim()); }).filter(function(n) { return n > 0; })
-      : [];
+    var expectedOpenCount = idx.open_count !== undefined ? Number(row[idx.open_count] || 0) : 0;
+    var ports = parseOpenPortsValue_(idx.open_ports !== undefined ? row[idx.open_ports] : '', expectedOpenCount);
     map[name] = {
       service_id: idx.service_id !== undefined ? String(row[idx.service_id] || '').trim() : '',
       service_name: idx.service_name !== undefined ? String(row[idx.service_name] || '').trim() : '',
@@ -1687,10 +1978,8 @@ function readPortScansByServiceId_() {
     var row = values[r];
     var serviceId = String(row[idx.service_id] || '').trim();
     if (!serviceId) continue;
-    var portsStr = String(row[idx.open_ports] || '').trim();
-    var ports = portsStr
-      ? portsStr.split(',').map(function(p) { return Number(p.trim()); }).filter(function(n) { return n > 0; })
-      : [];
+    var expectedOpenCount = idx.open_count !== undefined ? Number(row[idx.open_count] || 0) : 0;
+    var ports = parseOpenPortsValue_(idx.open_ports !== undefined ? row[idx.open_ports] : '', expectedOpenCount);
     map[serviceId] = {
       device_name: String(row[idx.device_name] || '').trim(),
       service_id: serviceId,
@@ -1706,17 +1995,51 @@ function readPortScansByServiceId_() {
   return map;
 }
 
+function listPortScans_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_PORT_SCANS);
+  if (!sh || sh.getLastRow() < 2) return { ok: true, data: [] };
+  var values = sh.getDataRange().getValues();
+  var idx = indexMap_(values[0]);
+  var rows = values.slice(1).map(function(row) {
+    var expectedOpenCount = idx.open_count !== undefined ? Number(row[idx.open_count] || 0) : 0;
+    var ports = parseOpenPortsValue_(idx.open_ports !== undefined ? row[idx.open_ports] : '', expectedOpenCount);
+    var scannedAt = row[idx.scanned_at] || '';
+    var scannedMs = scannedAt ? new Date(scannedAt).getTime() : 0;
+    return {
+      device_name: idx.device_name !== undefined ? String(row[idx.device_name] || '').trim() : '',
+      service_id: idx.service_id !== undefined ? String(row[idx.service_id] || '').trim() : '',
+      service_name: idx.service_name !== undefined ? String(row[idx.service_name] || '').trim() : '',
+      probe_id: idx.probe_id !== undefined ? String(row[idx.probe_id] || '').trim() : '',
+      host: idx.host !== undefined ? String(row[idx.host] || '').trim() : '',
+      open_ports: ports,
+      scanned_at: scannedAt,
+      open_count: idx.open_count !== undefined ? Number(row[idx.open_count] || 0) : ports.length,
+      total_count: idx.total_count !== undefined ? Number(row[idx.total_count] || 0) : ports.length,
+      scope: idx.service_id !== undefined && String(row[idx.service_id] || '').trim() ? 'service' : 'device',
+      sort_ts: Number.isFinite(scannedMs) ? scannedMs : 0
+    };
+  }).sort(function(left, right) {
+    return Number(right.sort_ts || 0) - Number(left.sort_ts || 0);
+  }).slice(0, 50).map(function(item) {
+    delete item.sort_ts;
+    return item;
+  });
+  return { ok: true, data: rows };
+}
+
 function dashboardInit_(hours) {
   var hoursNum = toNum_(hours, 24);
   var svcResult     = listServices_();
   var metricsResult = metricsAll_(hoursNum);
   var dateResult    = getChecksDateRange_();
+  var portScansResult = listPortScans_();
   return {
     ok: true,
     data: {
       services:       svcResult.data     || [],
       metricsAll:     metricsResult.data || {},
-      checksDateRange: dateResult.data   || {}
+      checksDateRange: dateResult.data   || {},
+      portScans:      portScansResult.data || []
     }
   };
 }

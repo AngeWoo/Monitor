@@ -11,12 +11,16 @@ const DEFAULT_API_BASE = "https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2
 const DEFAULT_API_REDIRECTS = 5;
 const DEFAULT_CONTROL_INTERVAL_SEC = 60;
 const DEFAULT_PORT_SCAN_TIMEOUT_MS = 2500;
+const DEFAULT_CONTROL_SCAN_DEVICE_NAME = "所有測試項";
+const DEFAULT_CONTROL_SCAN_HOST = "AUTO";
+const DEFAULT_CONTROL_SCAN_PORTS = "22,80,443,3389";
 
 function parseCliArgs(argv) {
   const parsed = {
     configPath: "",
     controlMode: false,
     runOnceMode: false,
+    claimPortScanMode: false,
     noResultWindow: false,
     serviceId: "",
     portScanMode: false,
@@ -34,6 +38,10 @@ function parseCliArgs(argv) {
     }
     if (arg === "--run-once") {
       parsed.runOnceMode = true;
+      continue;
+    }
+    if (arg === "--claim-port-scan-request") {
+      parsed.claimPortScanMode = true;
       continue;
     }
     if (arg === "--no-result-window") {
@@ -89,6 +97,10 @@ function toNum(value, fallback) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
+}
+
+function escapePowerShellSingleQuoted(value) {
+  return String(value || "").replace(/'/g, "''");
 }
 
 function getRuntimeBaseDir() {
@@ -255,6 +267,62 @@ async function getPortScanConfig() {
   return response.data || {};
 }
 
+async function claimPortScanSignal() {
+  const response = await apiPost({
+    action: "claimPortScanSignal",
+    probe_id: RUNTIME.probeId,
+    probe_name: RUNTIME.probeName
+  });
+  if (!response || !response.ok) {
+    throw new Error(response && response.error ? response.error : "claimPortScanSignal failed");
+  }
+  return response.data || null;
+}
+
+async function appendPortScanSignalLog(requestId, message, level = "info") {
+  if (!requestId || !message) return;
+  const response = await apiPost({
+    action: "appendPortScanSignalLog",
+    request_id: requestId,
+    probe_id: RUNTIME.probeId,
+    level,
+    message
+  });
+  if (!response || !response.ok) {
+    throw new Error(response && response.error ? response.error : "appendPortScanSignalLog failed");
+  }
+}
+
+async function completePortScanSignal(requestId, payload) {
+  if (!requestId) return;
+  const response = await apiPost({
+    action: "completePortScanSignal",
+    request_id: requestId,
+    probe_id: RUNTIME.probeId,
+    ...payload
+  });
+  if (!response || !response.ok) {
+    throw new Error(response && response.error ? response.error : "completePortScanSignal failed");
+  }
+  return response.data || null;
+}
+
+function createPortScanLogger(options) {
+  const opts = options || {};
+  const requestId = String(opts.requestId || "").trim();
+  return async (message, level = "info") => {
+    const text = String(message || "").trim();
+    if (!text) return;
+    console.log(text);
+    if (!requestId) return;
+    try {
+      await appendPortScanSignalLog(requestId, text, level);
+    } catch (error) {
+      console.error(`[PORT_SCAN_REQUEST] log write failed: ${error.message}`);
+    }
+  };
+}
+
 function parsePortList(rawValue) {
   const tokens = String(rawValue || "")
     .split(/[\s,]+/)
@@ -285,10 +353,19 @@ function parsePortList(rawValue) {
   return [...ports].sort((left, right) => left - right);
 }
 
+function normalizeAllServicesLabel(value) {
+  return String(value || "").trim().toLowerCase().replace(/[\s_\-:]+/g, "");
+}
+
+function isAllServicesSelection(value) {
+  const normalized = normalizeAllServicesLabel(value);
+  return normalized === "allservices" || normalized === "all";
+}
+
 function deriveServicePortScanHost(service) {
   const candidates = [
-    safeText(service && service.secondary_url).trim(),
-    safeText(service && service.url).trim()
+    String(service && service.secondary_url || "").trim(),
+    String(service && service.url || "").trim()
   ].filter(Boolean);
   for (const candidate of candidates) {
     try {
@@ -303,7 +380,7 @@ function deriveServicePortScanHost(service) {
 function buildServicePortScanDeviceName(service) {
   const serviceId = String(service && service.id || "").trim();
   if (serviceId) return `service:${serviceId}`;
-  return `service:${safeText(service && service.name || service && service.url || "unknown").trim() || "unknown"}`;
+  return `service:${String(service && service.name || service && service.url || "unknown").trim() || "unknown"}`;
 }
 
 function scanTcpPort(host, port, timeoutMs) {
@@ -335,8 +412,44 @@ async function runPortScanOnce() {
   const host = String(RUNTIME.cli.scanHost || "").trim();
   const ports = parsePortList(RUNTIME.cli.scanPorts);
   const deviceName = String(RUNTIME.cli.deviceName || host).trim();
-  if (!host) throw new Error("Missing --scan-host");
   if (!ports.length) throw new Error("Missing valid --scan-ports");
+
+  if (isAllServicesSelection(deviceName)) {
+    const listResponse = await apiGet({ action: "listServices" });
+    if (!listResponse || !listResponse.ok) {
+      throw new Error(listResponse && listResponse.error ? listResponse.error : "listServices failed");
+    }
+
+    const services = Array.isArray(listResponse.data)
+      ? listResponse.data.filter((item) => toBool(item && item.enabled))
+      : [];
+    if (!services.length) {
+      throw new Error("No enabled services available for AllServices port scan");
+    }
+
+    await upsertProbe({});
+    console.log(`[PORT_SCAN] mode=all-services device=${deviceName} host=AUTO(service hosts) ports=${ports.join(",")}`);
+    const scanResults = await runGlobalPortScan(services, {
+      force: true,
+      ports: ports.join(","),
+      onLog: async (message) => console.log(message.replace(/\[PORT_SCAN_AUTO\]/g, "[PORT_SCAN]"))
+    });
+    const successCount = scanResults.filter((item) => item && item.ok).length;
+    const skippedCount = scanResults.filter((item) => item && item.skipped).length;
+    console.log(`[PORT_SCAN] completed services=${successCount} skipped=${skippedCount}`);
+    console.log(JSON.stringify({
+      ok: true,
+      probe_id: RUNTIME.probeId,
+      device_name: deviceName,
+      host: "AUTO(service hosts)",
+      scanned_service_count: successCount,
+      skipped_service_count: skippedCount,
+      total_count: ports.length
+    }, null, 2));
+    return;
+  }
+
+  if (!host) throw new Error("Missing --scan-host");
 
   await upsertProbe({});
 
@@ -345,13 +458,17 @@ async function runPortScanOnce() {
   const results = [];
 
   console.log(`[PORT_SCAN] device=${deviceName} host=${host} ports=${ports.join(",")}`);
-  for (const port of ports) {
+  for (let index = 0; index < ports.length; index += 1) {
+    const port = ports[index];
+    const progressLabel = `${index + 1}/${ports.length}`;
+    const progressPct = Math.round(((index + 1) / ports.length) * 100);
+    console.log(`[PORT_SCAN] progress=${progressLabel} (${progressPct}%) checking ${host}:${port}`);
     const result = await scanTcpPort(host, port, timeoutMs);
     results.push(result);
     if (result.status === "open") {
-      console.log(`[PORT_SCAN] ${host}:${port} OPEN`);
+      console.log(`[PORT_SCAN] progress=${progressLabel} (${progressPct}%) ${host}:${port} OPEN`);
     } else {
-      console.log(`[PORT_SCAN] ${host}:${port} CLOSED${result.error ? ` (${result.error})` : ""}`);
+      console.log(`[PORT_SCAN] progress=${progressLabel} (${progressPct}%) ${host}:${port} CLOSED${result.error ? ` (${result.error})` : ""}`);
     }
   }
 
@@ -369,6 +486,8 @@ async function runPortScanOnce() {
   if (!writeResponse || !writeResponse.ok) {
     throw new Error(writeResponse && writeResponse.error ? writeResponse.error : "updatePortScan failed");
   }
+  console.log(`[PORT_SCAN] write_response=${JSON.stringify(writeResponse)}`);
+  console.log(`[PORT_SCAN] completed open=${openPorts.length}/${ports.length}`);
 
   console.log(JSON.stringify({
     ok: true,
@@ -381,13 +500,15 @@ async function runPortScanOnce() {
   }, null, 2));
 }
 
-async function runGlobalPortScanIfEnabled(services) {
+async function runGlobalPortScan(services, options = {}) {
   const config = getPortScanConfig ? await getPortScanConfig() : {};
-  if (!toBool(config.enabled)) {
+  const force = toBool(options.force);
+  if (!force && !toBool(config.enabled)) {
     return [];
   }
 
-  const ports = parsePortList(config.ports);
+  const log = typeof options.onLog === "function" ? options.onLog : async (message) => console.log(message);
+  const ports = parsePortList(options.ports || config.ports);
   if (!ports.length) {
     return [{
       ok: false,
@@ -412,6 +533,7 @@ async function runGlobalPortScanIfEnabled(services) {
     const serviceName = String(service.name || service.url || serviceId).trim() || serviceId;
     const targetHost = deriveServicePortScanHost(service);
     if (!targetHost) {
+      await log(`[PORT_SCAN_AUTO] skip service=${serviceName} reason=missing host`, "warn");
       scanResults.push({
         ok: false,
         skipped: true,
@@ -426,13 +548,18 @@ async function runGlobalPortScanIfEnabled(services) {
     if (!hostScan) {
       const scannedAt = new Date().toISOString();
       const hostResults = [];
-      console.log(`[PORT_SCAN_AUTO] host=${targetHost} ports=${ports.join(",")}`);
-      for (const port of ports) {
+      await log(`[PORT_SCAN_AUTO] service=${serviceName} host=${targetHost} ports=${ports.join(",")}`);
+      for (let index = 0; index < ports.length; index += 1) {
+        const port = ports[index];
+        const progressLabel = `${index + 1}/${ports.length}`;
+        const progressPct = Math.round(((index + 1) / ports.length) * 100);
+        await log(`[PORT_SCAN_AUTO] progress=${progressLabel} (${progressPct}%) checking ${targetHost}:${port}`);
         const result = await scanTcpPort(targetHost, port, timeoutMs);
         hostResults.push(result);
-        console.log(`[PORT_SCAN_AUTO] ${targetHost}:${port} ${String(result.status || "").toUpperCase()}`);
+        await log(`[PORT_SCAN_AUTO] progress=${progressLabel} (${progressPct}%) ${targetHost}:${port} ${String(result.status || "").toUpperCase()}`);
       }
       const openPorts = hostResults.filter((item) => item.status === "open").map((item) => item.port);
+      await log(`[PORT_SCAN_AUTO] completed host=${targetHost} open=${openPorts.length}/${ports.length}`);
       hostScan = {
         host: targetHost,
         scannedAt,
@@ -471,6 +598,88 @@ async function runGlobalPortScanIfEnabled(services) {
   }
 
   return scanResults;
+}
+
+async function runGlobalPortScanIfEnabled(services) {
+  return runGlobalPortScan(services, { force: false });
+}
+
+async function runClaimedPortScanSession(session) {
+  const requestId = String(session && session.request_id || "").trim();
+  if (!requestId) {
+    throw new Error("Missing request_id");
+  }
+  const log = createPortScanLogger({ requestId });
+  const portsRaw = String(session && session.ports || "").trim();
+  const listResponse = await apiGet({ action: "listServices" });
+  if (!listResponse || !listResponse.ok) {
+    throw new Error(listResponse && listResponse.error ? listResponse.error : "listServices failed");
+  }
+
+  const services = Array.isArray(listResponse.data)
+    ? listResponse.data.filter((item) => toBool(item && item.enabled))
+    : [];
+  const ports = parsePortList(portsRaw);
+  const summaryPrefix = `[PORT_SCAN_REQUEST] request=${requestId}`;
+
+  await log(`${summaryPrefix} claimed by ${RUNTIME.probeId}`);
+  if (!ports.length) {
+    const summary = `${summaryPrefix} failed: no valid ports configured`;
+    await log(summary, "error");
+    await completePortScanSignal(requestId, {
+      status: "failed",
+      error: "No valid ports configured",
+      result_summary: summary
+    });
+    return { ok: false, requestId, reason: "No valid ports configured" };
+  }
+  if (!services.length) {
+    const summary = `${summaryPrefix} completed: no enabled services to scan`;
+    await log(summary, "warn");
+    await completePortScanSignal(requestId, {
+      status: "completed",
+      result_summary: summary
+    });
+    return { ok: true, requestId, results: [] };
+  }
+
+  try {
+    const scanResults = await runGlobalPortScan(services, {
+      force: true,
+      ports: ports.join(","),
+      onLog: log
+    });
+    const successCount = scanResults.filter((item) => item && item.ok).length;
+    const skippedCount = scanResults.filter((item) => item && item.skipped).length;
+    const summary = `${summaryPrefix} completed by ${RUNTIME.probeId}: ${successCount} services scanned, ${skippedCount} skipped`;
+    await log(summary);
+    await completePortScanSignal(requestId, {
+      status: "completed",
+      result_summary: summary
+    });
+    return { ok: true, requestId, results: scanResults };
+  } catch (error) {
+    const message = String(error && error.message ? error.message : error);
+    const summary = `${summaryPrefix} failed: ${message}`;
+    await log(summary, "error");
+    await completePortScanSignal(requestId, {
+      status: "failed",
+      error: message,
+      result_summary: summary
+    });
+    throw error;
+  }
+}
+
+async function claimAndRunRequestedPortScan(options = {}) {
+  const session = await claimPortScanSignal();
+  if (!session) {
+    if (!options.silentNoop) {
+      console.log("[PORT_SCAN_REQUEST] no pending request");
+    }
+    return null;
+  }
+  return runClaimedPortScanSession(session);
 }
 
 async function upsertProbe(payload) {
@@ -867,29 +1076,56 @@ function maybeShowRunSummaryWindow(payload) {
   }
 }
 
-function buildControlWindowCommand() {
+async function getControlWindowDefaults() {
+  const defaults = {
+    deviceName: DEFAULT_CONTROL_SCAN_DEVICE_NAME,
+    scanHost: DEFAULT_CONTROL_SCAN_HOST,
+    scanPorts: DEFAULT_CONTROL_SCAN_PORTS
+  };
+  try {
+    const config = await getPortScanConfig();
+    const ports = parsePortList(config && config.ports);
+    if (ports.length) {
+      defaults.scanPorts = ports.join(",");
+    }
+  } catch (_) {
+    // Fall back to the local defaults if the admin config cannot be read.
+  }
+  return defaults;
+}
+
+function buildControlWindowCommand(controlDefaults) {
   const childFile = process.execPath;
   const runOnceArgs = process.pkg
     ? ["--run-once", "--no-result-window"]
     : [path.resolve(__filename), "--run-once", "--no-result-window"];
+  const claimPortScanArgs = process.pkg
+    ? ["--claim-port-scan-request", "--no-result-window"]
+    : [path.resolve(__filename), "--claim-port-scan-request", "--no-result-window"];
   const portScanArgs = process.pkg
     ? ["--port-scan", "--no-result-window"]
     : [path.resolve(__filename), "--port-scan", "--no-result-window"];
 
   if (RUNTIME.configPath && fs.existsSync(RUNTIME.configPath)) {
     runOnceArgs.push("--config", RUNTIME.configPath);
+    claimPortScanArgs.push("--config", RUNTIME.configPath);
     portScanArgs.push("--config", RUNTIME.configPath);
   }
 
   const launchArgs = runOnceArgs.map((item) => `"${String(item).replace(/"/g, '\\"')}"`).join(" ");
+  const claimPortScanLaunchArgs = claimPortScanArgs.map((item) => `"${String(item).replace(/"/g, '\\"')}"`).join(" ");
   const portScanLaunchArgs = portScanArgs.map((item) => `"${String(item).replace(/"/g, '\\"')}"`).join(" ");
   const title = `${RUNTIME.probeName} Control`;
   const intervalMs = Math.max(10000, RUNTIME.controlWindowIntervalSec * 1000);
+  const defaults = controlDefaults || {};
+  const defaultDeviceName = String(defaults.deviceName || DEFAULT_CONTROL_SCAN_DEVICE_NAME).trim() || DEFAULT_CONTROL_SCAN_DEVICE_NAME;
+  const defaultScanHost = String(defaults.scanHost || DEFAULT_CONTROL_SCAN_HOST).trim() || DEFAULT_CONTROL_SCAN_HOST;
+  const defaultScanPorts = String(defaults.scanPorts || DEFAULT_CONTROL_SCAN_PORTS).trim() || DEFAULT_CONTROL_SCAN_PORTS;
   return `
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object System.Windows.Forms.Form
-$form.Text = '${String(title).replace(/'/g, "''")}'
+$form.Text = '${escapePowerShellSingleQuoted(title)}'
 $form.StartPosition = 'CenterScreen'
 $form.Size = New-Object System.Drawing.Size(760, 560)
 $form.MinimumSize = New-Object System.Drawing.Size(720, 520)
@@ -931,7 +1167,7 @@ $scanTitle.Text = 'Port Scan'
 $scanTitle.Location = New-Object System.Drawing.Point(4, 4)
 $scanTitle.AutoSize = $true
 $scanHint = New-Object System.Windows.Forms.Label
-$scanHint.Text = 'Port Scan becomes available after this probe reports online.'
+$scanHint.Text = 'Device 預設所有測試項，Host=AUTO 代表依各服務網址自動判斷。'
 $scanHint.Location = New-Object System.Drawing.Point(84, 5)
 $scanHint.AutoSize = $true
 $deviceLabel = New-Object System.Windows.Forms.Label
@@ -941,7 +1177,7 @@ $deviceLabel.AutoSize = $true
 $txtDevice = New-Object System.Windows.Forms.TextBox
 $txtDevice.Location = New-Object System.Drawing.Point(64, 30)
 $txtDevice.Size = New-Object System.Drawing.Size(180, 24)
-$txtDevice.Text = '${String(RUNTIME.metadata.host_name || RUNTIME.probeName || "").replace(/'/g, "''")}'
+$txtDevice.Text = '${escapePowerShellSingleQuoted(defaultDeviceName)}'
 $hostLabel = New-Object System.Windows.Forms.Label
 $hostLabel.Text = 'Host'
 $hostLabel.Location = New-Object System.Drawing.Point(258, 34)
@@ -949,6 +1185,7 @@ $hostLabel.AutoSize = $true
 $txtHost = New-Object System.Windows.Forms.TextBox
 $txtHost.Location = New-Object System.Drawing.Point(304, 30)
 $txtHost.Size = New-Object System.Drawing.Size(180, 24)
+$txtHost.Text = '${escapePowerShellSingleQuoted(defaultScanHost)}'
 $portsLabel = New-Object System.Windows.Forms.Label
 $portsLabel.Text = 'Ports'
 $portsLabel.Location = New-Object System.Drawing.Point(498, 34)
@@ -956,7 +1193,7 @@ $portsLabel.AutoSize = $true
 $txtPorts = New-Object System.Windows.Forms.TextBox
 $txtPorts.Location = New-Object System.Drawing.Point(542, 30)
 $txtPorts.Size = New-Object System.Drawing.Size(180, 24)
-$txtPorts.Text = '22,80,443,3389'
+$txtPorts.Text = '${escapePowerShellSingleQuoted(defaultScanPorts)}'
 $scanNote = New-Object System.Windows.Forms.Label
 $scanNote.Text = 'Use comma-separated ports or ranges, e.g. 80,443,8080-8082'
 $scanNote.Location = New-Object System.Drawing.Point(4, 66)
@@ -965,7 +1202,7 @@ $btnPortScan = New-Object System.Windows.Forms.Button
 $btnPortScan.Text = 'Scan Ports'
 $btnPortScan.Location = New-Object System.Drawing.Point(622, 62)
 $btnPortScan.Size = New-Object System.Drawing.Size(100, 30)
-$btnPortScan.Enabled = $false
+$btnPortScan.Enabled = $true
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Multiline = $true
 $logBox.ReadOnly = $true
@@ -993,6 +1230,8 @@ $form.Controls.Add($buttonPanel)
 $form.Controls.Add($statusLabel)
 $intervalTimer = New-Object System.Windows.Forms.Timer
 $intervalTimer.Interval = ${intervalMs}
+$signalTimer = New-Object System.Windows.Forms.Timer
+$signalTimer.Interval = 5000
 $pollTimer = New-Object System.Windows.Forms.Timer
 $pollTimer.Interval = 700
 $script:isLoopRunning = $false
@@ -1001,6 +1240,7 @@ $script:isPortScanRunning = $false
 $script:isProbeOnline = $false
 $script:probeProcess = $null
 $script:scanProcess = $null
+$script:scanProcessMode = ''
 function Append-Log([string]$text) {
   if ([string]::IsNullOrWhiteSpace($text)) { return }
   $logBox.AppendText($text + [Environment]::NewLine)
@@ -1010,7 +1250,7 @@ function Quote-Arg([string]$value) {
   return '"' + ($value -replace '"', '\\"') + '"'
 }
 function Update-PortScanState() {
-  $btnPortScan.Enabled = $script:isProbeOnline -and -not $script:isProbeRunning -and -not $script:isPortScanRunning -and -not $script:isLoopRunning
+  $btnPortScan.Enabled = -not $script:isProbeRunning -and -not $script:isPortScanRunning
 }
 function Update-Status() {
   if ($script:isPortScanRunning) {
@@ -1067,10 +1307,6 @@ function Start-ProbeRun() {
   $pollTimer.Start()
 }
 function Start-PortScan() {
-  if (-not $script:isProbeOnline) {
-    Append-Log('Port Scan requires probe online status. Run the probe once first.')
-    return
-  }
   if ($script:isProbeRunning -or $script:isPortScanRunning) {
     Append-Log('Another probe task is already in progress.')
     return
@@ -1113,10 +1349,42 @@ function Start-PortScan() {
   $script:scanProcess.BeginOutputReadLine()
   $script:scanProcess.BeginErrorReadLine()
   $script:isPortScanRunning = $true
+  $script:scanProcessMode = 'manual'
   $btnRunOnce.Enabled = $false
   $btnStart.Enabled = $false
   $btnStop.Enabled = $false
   Append-Log(('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] Port Scan started for ' + $deviceName + ' (' + $scanHost + ')'))
+  Update-Status
+  $pollTimer.Start()
+}
+function Start-RequestedPortScan() {
+  if ($script:isProbeRunning -or $script:isPortScanRunning) {
+    return
+  }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = '${String(childFile).replace(/'/g, "''")}'
+  $psi.Arguments = '${claimPortScanLaunchArgs.replace(/'/g, "''")}'
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+  $script:scanProcess = New-Object System.Diagnostics.Process
+  $script:scanProcess.StartInfo = $psi
+  $script:scanProcess.add_OutputDataReceived({
+    param($sender, $args)
+    if ($args.Data) { $form.BeginInvoke([Action[string]]{ param($line) Append-Log($line) }, $args.Data) | Out-Null }
+  })
+  $script:scanProcess.add_ErrorDataReceived({
+    param($sender, $args)
+    if ($args.Data) { $form.BeginInvoke([Action[string]]{ param($line) Append-Log($line) }, $args.Data) | Out-Null }
+  })
+  [void]$script:scanProcess.Start()
+  $script:scanProcess.BeginOutputReadLine()
+  $script:scanProcess.BeginErrorReadLine()
+  $script:isPortScanRunning = $true
+  $script:scanProcessMode = 'remote'
   Update-Status
   $pollTimer.Start()
 }
@@ -1143,14 +1411,18 @@ $pollTimer.Add_Tick({
       $hasActiveProcess = $true
     } else {
       $exitCode = $script:scanProcess.ExitCode
+      $scanMode = [string]$script:scanProcessMode
       $script:scanProcess.Dispose()
       $script:scanProcess = $null
       $script:isPortScanRunning = $false
+      $script:scanProcessMode = ''
       if ($exitCode -eq 0) { $script:isProbeOnline = $true }
       $btnRunOnce.Enabled = $true
       $btnStart.Enabled = -not $script:isLoopRunning
       $btnStop.Enabled = $script:isLoopRunning
-      Append-Log(('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] Port Scan finished, exit code ' + $exitCode))
+      if (-not ($scanMode -eq 'remote' -and $exitCode -eq 3)) {
+        Append-Log(('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] Port Scan finished, exit code ' + $exitCode))
+      }
       Update-Status
     }
   }
@@ -1161,7 +1433,13 @@ $pollTimer.Add_Tick({
 $intervalTimer.Add_Tick({
   if (-not $script:isLoopRunning) { return }
   if ($script:isProbeRunning) { return }
+  if ($script:isPortScanRunning) { return }
   Start-ProbeRun
+})
+$signalTimer.Add_Tick({
+  if ($script:isProbeRunning) { return }
+  if ($script:isPortScanRunning) { return }
+  Start-RequestedPortScan
 })
 $btnRunOnce.Add_Click({ Start-ProbeRun })
 $btnStart.Add_Click({
@@ -1185,6 +1463,7 @@ $btnStop.Add_Click({
 $btnPortScan.Add_Click({ Start-PortScan })
 $btnClose.Add_Click({
   $intervalTimer.Stop()
+  $signalTimer.Stop()
   $pollTimer.Stop()
   if ($script:probeProcess -and -not $script:probeProcess.HasExited) {
     try { $script:probeProcess.Kill() } catch {}
@@ -1197,18 +1476,21 @@ $btnClose.Add_Click({
 $form.Add_Shown({
   Append-Log('Control window ready.')
   Append-Log('Use Run Once for a single check, or Start Loop for repeated runs.')
-  Append-Log('Port Scan is enabled after the probe finishes one successful check.')
+Append-Log('Port Scan is ready with Device=所有測試項, Host=AUTO(service hosts), and Ports from admin config when available.')
+  Append-Log('Admin-triggered port scan requests are polled automatically while this window is open.')
+  $signalTimer.Start()
   Update-Status
 })
 [void]$form.ShowDialog()
 `;
 }
 
-function showWindowsControlWindow() {
+async function showWindowsControlWindow() {
   if (process.platform !== "win32") {
     throw new Error("Control window is only supported on Windows");
   }
-  const encoded = Buffer.from(buildControlWindowCommand(), "utf16le").toString("base64");
+  const controlDefaults = await getControlWindowDefaults();
+  const encoded = Buffer.from(buildControlWindowCommand(controlDefaults), "utf16le").toString("base64");
   spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
     stdio: "ignore",
     windowsHide: false
@@ -1413,15 +1695,22 @@ async function bootstrap() {
     await runPortScanOnce();
     return;
   }
+  if (RUNTIME.cli.claimPortScanMode) {
+    const claimed = await claimAndRunRequestedPortScan({ silentNoop: true });
+    if (!claimed) process.exitCode = 3;
+    return;
+  }
   if (process.platform === "win32" && !!RUNTIME.cli.controlMode && !RUNTIME.cli.runOnceMode) {
-    showWindowsControlWindow();
+    await showWindowsControlWindow();
     return;
   }
   if (shouldOpenControlWindow()) {
-    showWindowsControlWindow();
+    await showWindowsControlWindow();
     return;
   }
+  await claimAndRunRequestedPortScan({ silentNoop: true });
   await runProbeOnce();
+  await claimAndRunRequestedPortScan({ silentNoop: true });
 }
 
 bootstrap().catch(async (error) => {

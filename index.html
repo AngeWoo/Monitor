@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Server Monitor 儀表板</title>
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260315-a045" />
-<link rel="stylesheet" href="./assets/style.css?v=20260316-a067" />
+<link rel="stylesheet" href="./assets/style.css?v=20260316-a069" />
 </head>
 <body class="page-dashboard">
   <div id="loadingOverlay" class="loading-overlay">
@@ -69,6 +69,28 @@
             </tr>
           </thead>
           <tbody id="servicesBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h14"></path><path d="M8 8l-4 4 4 4"></path><path d="M16 8l4 4-4 4"></path></svg></span><span>最近 Port 掃描</span></h2>
+        <span class="hint">含 probe 本機手動掃描與管理頁觸發掃描</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>類型</th>
+              <th>名稱</th>
+              <th>Host</th>
+              <th>開啟 Ports</th>
+              <th>掃描時間</th>
+              <th>Probe</th>
+            </tr>
+          </thead>
+          <tbody id="portScansBody"></tbody>
         </table>
       </div>
     </section>
@@ -161,6 +183,6 @@
     <small>Copyright © 2026 Server Monitor. All rights reserved.</small>
   </footer>
 
-  <script type="module" src="./assets/dashboard.js?v=20260316-a067"></script>
+  <script type="module" src="./assets/dashboard.js?v=20260316-a069"></script>
 </body>
 </html>

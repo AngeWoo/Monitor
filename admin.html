@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Server Monitor 管理設定</title>
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260315-a049" />
-<link rel="stylesheet" href="./assets/style.css?v=20260316-a067" />
+<link rel="stylesheet" href="./assets/style.css?v=20260316-a068" />
 </head>
 <body class="page-admin">
   <div id="loadingOverlay" class="loading-overlay">
@@ -127,6 +127,7 @@
         <p class="message report-inline-note port-scan-config-note">所有上線中的 Probe 都會套用這組 ports，掃描各服務主機，結果各自回寫到 Google Sheet。</p>
       </form>
       <p id="portScanConfigMessage" class="message"></p>
+      <pre id="portScanRequestLog" class="port-scan-request-log">按下「開始掃描 Port」後，這裡會顯示回報紀錄。</pre>
     </section>
 
     <section class="panel">
@@ -274,6 +275,6 @@
     <small>Copyright © 2026 Server Monitor. All rights reserved.</small>
   </footer>
 
-  <script type="module" src="./assets/admin.js?v=20260316-a067"></script>
+  <script type="module" src="./assets/admin.js?v=20260316-a068"></script>
 </body>
 </html>
