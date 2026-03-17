@@ -611,18 +611,27 @@ async function runClaimedPortScanSession(session) {
   }
   const log = createPortScanLogger({ requestId });
   const portsRaw = String(session && session.ports || "").trim();
+  const requestedServiceId = String(session && session.service_id || "").trim();
+  const requestedServiceName = String(session && session.service_name || requestedServiceId).trim();
   const listResponse = await apiGet({ action: "listServices" });
   if (!listResponse || !listResponse.ok) {
     throw new Error(listResponse && listResponse.error ? listResponse.error : "listServices failed");
   }
 
-  const services = Array.isArray(listResponse.data)
+  let services = Array.isArray(listResponse.data)
     ? listResponse.data.filter((item) => toBool(item && item.enabled))
     : [];
   const ports = parsePortList(portsRaw);
   const summaryPrefix = `[PORT_SCAN_REQUEST] request=${requestId}`;
+  const scopeLabel = requestedServiceId
+    ? `service=${requestedServiceName || requestedServiceId}`
+    : "scope=all-services";
 
-  await log(`${summaryPrefix} claimed by ${RUNTIME.probeId}`);
+  if (requestedServiceId) {
+    services = services.filter((item) => String(item && item.id || "").trim() === requestedServiceId);
+  }
+
+  await log(`${summaryPrefix} claimed by ${RUNTIME.probeId} ${scopeLabel}`);
   if (!ports.length) {
     const summary = `${summaryPrefix} failed: no valid ports configured`;
     await log(summary, "error");
@@ -634,7 +643,9 @@ async function runClaimedPortScanSession(session) {
     return { ok: false, requestId, reason: "No valid ports configured" };
   }
   if (!services.length) {
-    const summary = `${summaryPrefix} completed: no enabled services to scan`;
+    const summary = requestedServiceId
+      ? `${summaryPrefix} completed: requested service not found or disabled`
+      : `${summaryPrefix} completed: no enabled services to scan`;
     await log(summary, "warn");
     await completePortScanSignal(requestId, {
       status: "completed",
@@ -651,7 +662,7 @@ async function runClaimedPortScanSession(session) {
     });
     const successCount = scanResults.filter((item) => item && item.ok).length;
     const skippedCount = scanResults.filter((item) => item && item.skipped).length;
-    const summary = `${summaryPrefix} completed by ${RUNTIME.probeId}: ${successCount} services scanned, ${skippedCount} skipped`;
+    const summary = `${summaryPrefix} completed by ${RUNTIME.probeId}: ${successCount} services scanned, ${skippedCount} skipped (${scopeLabel})`;
     await log(summary);
     await completePortScanSignal(requestId, {
       status: "completed",

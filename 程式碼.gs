@@ -1579,6 +1579,8 @@ function getProbeRunSignal_() {
 function requestPortScanSignal_(payload) {
   var requestedBy = String((payload && payload.requested_by) || "system").trim() || "system";
   var note = String((payload && payload.note) || "admin port scan").trim() || "admin port scan";
+  var serviceId = String((payload && payload.service_id) || "").trim();
+  var serviceName = String((payload && payload.service_name) || "").trim();
   var cfg = getPortScanConfig_();
   var request = withPortScanSignalLock_(function(session) {
     if (session && ["pending", "running"].indexOf(String(session.status || "").trim()) !== -1) {
@@ -1590,6 +1592,8 @@ function requestPortScanSignal_(payload) {
       status: "pending",
       requested_at: requestedAt,
       requested_by: requestedBy,
+      service_id: serviceId,
+      service_name: serviceName,
       note: note,
       ports: String(cfg && cfg.ports || "").trim(),
       updated_at: requestedAt,
@@ -1604,7 +1608,7 @@ function requestPortScanSignal_(payload) {
           at: requestedAt,
           level: "info",
           probe_id: "",
-          message: "Port scan requested by " + requestedBy
+          message: "Port scan requested by " + requestedBy + (serviceId ? (" for service " + (serviceName || serviceId)) : "")
         }
       ]
     };
@@ -1738,6 +1742,8 @@ function normalizePortScanSession_(session) {
   normalized.status = String(normalized.status || "pending").trim() || "pending";
   normalized.requested_at = String(normalized.requested_at || "").trim();
   normalized.requested_by = String(normalized.requested_by || "").trim();
+  normalized.service_id = String(normalized.service_id || "").trim();
+  normalized.service_name = String(normalized.service_name || "").trim();
   normalized.note = String(normalized.note || "").trim();
   normalized.ports = String(normalized.ports || "").trim();
   normalized.updated_at = String(normalized.updated_at || "").trim();
