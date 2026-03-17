@@ -192,6 +192,21 @@ function formatPortScanSessionLogLine(entry) {
   return suffix ? `${safeText(entry?.message || '')} (${suffix})` : safeText(entry?.message || '');
 }
 
+function describePortScanTarget(meta) {
+  const serviceId = safeText(meta?.serviceId || '');
+  const serviceName = safeText(meta?.serviceName || '');
+  if (serviceId) {
+    return {
+      scopeLabel: `服務「${serviceName || serviceId}」的`,
+      requestNote: `manual port scan request for ${serviceName || serviceId}`
+    };
+  }
+  return {
+    scopeLabel: '各服務主機的',
+    requestNote: 'manual port scan request'
+  };
+}
+
 async function fetchPortScanSession() {
   const res = await apiGet({ action: 'getPortScanSignal' }, 120000);
   if (!res || res.ok === false) throw new Error(res?.error || 'getPortScanSignal failed');
@@ -202,6 +217,7 @@ async function watchPortScanRequest(meta) {
   const watchToken = ++portScanWatchToken;
   const requestId = safeText(meta?.requestId || '');
   const onlineProbeCount = Math.max(0, Number(meta?.onlineProbeCount || 0) || 0);
+  const target = describePortScanTarget(meta);
   const startedAt = Date.now();
   let pollRound = 0;
   let lastMarker = '';
@@ -211,8 +227,8 @@ async function watchPortScanRequest(meta) {
 
   appendPortScanRequestLog(
     onlineProbeCount > 0
-      ? `已送出 Port 掃描要求，等待 ${onlineProbeCount} 個上線 Probe 回報。`
-      : '已送出 Port 掃描要求，但目前沒有偵測到上線中的 Probe。'
+      ? `已送出 ${target.scopeLabel} Port 掃描要求，等待 ${onlineProbeCount} 個上線 Probe 回報。`
+      : `已送出 ${target.scopeLabel} Port 掃描要求，但目前沒有偵測到上線中的 Probe。`
   );
 
   while (watchToken === portScanWatchToken && Date.now() - startedAt < PORT_SCAN_WATCH_TIMEOUT_MS) {
@@ -421,6 +437,11 @@ async function handleTableClick(event) {
 
     if (action === 'refresh') {
       await handleSingleServiceRefreshWithOverlay(serviceId, safeText(btn.dataset.name || '服務'));
+      return;
+    }
+
+    if (action === 'port-scan') {
+      await handleSingleServicePortScanWithOverlay(serviceId, safeText(btn.dataset.name || '服務'));
       return;
     }
 
@@ -787,7 +808,8 @@ rowTemplate = function rowTemplateSafe(rawService) {
 
       <div class="service-card-actions">
         <button class="btn tiny" data-action="save" data-id="${serviceId}">儲存</button>
-        <button class="btn tiny secondary" data-action="refresh" data-id="${serviceId}">重新檢查</button>
+        <button class="btn tiny secondary" data-action="refresh" data-id="${serviceId}" data-name="${escapeAttr(service.name)}">重新檢查</button>
+        <button class="btn tiny secondary" data-action="port-scan" data-id="${serviceId}" data-name="${escapeAttr(service.name)}">重新掃描 Port</button>
         <button class="btn tiny danger" data-action="disable" data-id="${serviceId}">停用</button>
         <button class="btn tiny danger" data-action="remove" data-id="${serviceId}" data-name="${escapeAttr(service.name)}">移除</button>
       </div>
@@ -955,13 +977,20 @@ async function handleReloadPortScanConfigWithOverlay() {
 }
 
 async function handleRequestPortScanWithOverlay() {
+  await requestPortScanWithOverlay({});
+}
+
+async function requestPortScanWithOverlay(meta = {}) {
+  const target = describePortScanTarget(meta);
   let requestMeta = null;
-  await runTransientLoading('正在通知 Probe 重新掃描 Port...', async (progress) => {
+  await runTransientLoading(`正在通知 Probe 重新掃描 ${target.scopeLabel} Port...`, async (progress) => {
     progress(14);
     const res = await apiPost({
       action: 'requestPortScanSignal',
       requested_by: 'admin',
-      note: 'manual port scan request'
+      note: target.requestNote,
+      service_id: safeText(meta.serviceId || ''),
+      service_name: safeText(meta.serviceName || '')
     }, 120000);
     if (!res || res.ok === false) throw new Error(res?.error || 'requestPortScanSignal failed');
 
@@ -969,7 +998,9 @@ async function handleRequestPortScanWithOverlay() {
     requestMeta = {
       requestId: safeText(res.data?.request_id || ''),
       requestedAt: safeText(res.data?.requested_at || new Date().toISOString()),
-      onlineProbeCount
+      onlineProbeCount,
+      serviceId: safeText(res.data?.service_id || meta.serviceId || ''),
+      serviceName: safeText(res.data?.service_name || meta.serviceName || '')
     };
     progress(34);
 
@@ -986,7 +1017,7 @@ async function handleRequestPortScanWithOverlay() {
 
     if (portScanConfigMessage) {
       portScanConfigMessage.textContent = onlineProbeCount > 0
-        ? `已通知 ${onlineProbeCount} 個上線中的 Probe 重新掃描各服務主機 Port。`
+        ? `已通知 ${onlineProbeCount} 個上線中的 Probe 重新掃描${target.scopeLabel} Port。`
         : '目前沒有上線中的 Probe，可先確認 Probe 視窗是否在線。';
     }
   });
@@ -995,6 +1026,15 @@ async function handleRequestPortScanWithOverlay() {
   if (requestMeta) {
     void watchPortScanRequest(requestMeta);
   }
+}
+
+async function handleSingleServicePortScanWithOverlay(serviceId, serviceName) {
+  const labelName = safeText(serviceName || serviceId || '服務');
+  await requestPortScanWithOverlay({
+    serviceId,
+    serviceName: labelName
+  });
+  adminMessage.textContent = `已送出 ${labelName} 的 Port 重新掃描要求。`;
 }
 
 async function handleProbeAction(event) {
