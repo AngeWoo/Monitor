@@ -8,6 +8,9 @@ $apiBase = ""
 $probeId = ""
 $probeName = ""
 $loopIntervalSec = 60
+$defaultDeviceName = ""
+$defaultScanHost = ""
+$defaultScanPorts = "22,80,443,3389"
 
 if (-not (Test-Path $exePath)) {
   [System.Windows.Forms.MessageBox]::Show("monitor-local-probe.exe not found.`r`n$exePath", "Monitor Local Probe") | Out-Null
@@ -17,137 +20,154 @@ if (-not (Test-Path $exePath)) {
 if (Test-Path $cfgPath) {
   try {
     $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
-    $apiBase = [string]$cfg.api_base
-    $probeId = [string]$cfg.probe_id
+    $apiBase   = [string]$cfg.api_base
+    $probeId   = [string]$cfg.probe_id
     $probeName = [string]$cfg.probe_name
     if ($cfg.control_window_interval_sec) {
       $loopIntervalSec = [Math]::Max(10, [int]$cfg.control_window_interval_sec)
     }
-  } catch {
-  }
+    if ($cfg.scan_device_name) { $defaultDeviceName = [string]$cfg.scan_device_name }
+    if ($cfg.scan_host)        { $defaultScanHost   = [string]$cfg.scan_host }
+    if ($cfg.scan_ports)       { $defaultScanPorts  = [string]$cfg.scan_ports }
+  } catch {}
 }
 
-if (-not $probeId) { $probeId = "local-$env:COMPUTERNAME" }
-if (-not $probeName) { $probeName = $probeId }
+if (-not $probeId)           { $probeId = "local-$env:COMPUTERNAME" }
+if (-not $probeName)         { $probeName = $probeId }
+if (-not $defaultDeviceName) { $defaultDeviceName = $env:COMPUTERNAME }
 
+# ── Async signal state (shared between UI thread and background runspace) ─────
+$script:sigState = [hashtable]::Synchronized(@{
+  PortSignal  = $null
+  SecSignal   = $null
+  ProbeSignal = $null
+  Stop        = $false
+})
+
+# ── Start background runspace for signal polling (no UI thread blocking) ──────
+$sigRunspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+$sigRunspace.Open()
+$sigRunspace.SessionStateProxy.SetVariable('sigState', $script:sigState)
+$sigRunspace.SessionStateProxy.SetVariable('apiBase',  $apiBase)
+$sigRunspace.SessionStateProxy.SetVariable('probeId',  $probeId)
+
+$sigPS = [System.Management.Automation.PowerShell]::Create()
+$sigPS.Runspace = $sigRunspace
+[void]$sigPS.AddScript({
+  function Fetch-Json {
+    param([string]$Url)
+    try {
+      $req = [System.Net.WebRequest]::Create($Url)
+      $req.Timeout = 8000
+      $resp = $req.GetResponse()
+      $sr   = New-Object System.IO.StreamReader($resp.GetResponseStream())
+      $body = $sr.ReadToEnd()
+      $sr.Dispose(); $resp.Dispose()
+      return $body | ConvertFrom-Json
+    } catch { return $null }
+  }
+
+  while (-not $sigState.Stop) {
+    if ($apiBase) {
+      try {
+        $r = Fetch-Json ($apiBase + "?action=getPortScanSignal")
+        $sigState.PortSignal = if ($r -and $r.ok) { $r.data } else { $null }
+      } catch { $sigState.PortSignal = $null }
+
+      try {
+        $r = Fetch-Json ($apiBase + "?action=getSecurityScanSignal")
+        $sigState.SecSignal = if ($r -and $r.ok) { $r.data } else { $null }
+      } catch { $sigState.SecSignal = $null }
+
+      try {
+        $pid2 = [System.Uri]::EscapeDataString($probeId)
+        $r = Fetch-Json ($apiBase + "?action=getProbeRunSignal&probe_id=" + $pid2)
+        $sigState.ProbeSignal = if ($r -and $r.ok) { $r.data } else { $null }
+      } catch { $sigState.ProbeSignal = $null }
+    }
+    # Sleep 5 s in 100ms slices so Stop flag is checked promptly
+    for ($i = 0; $i -lt 50 -and -not $sigState.Stop; $i++) {
+      Start-Sleep -Milliseconds 100
+    }
+  }
+})
+$sigPS.BeginInvoke() | Out-Null
+
+try {
+
+# ── Form ──────────────────────────────────────────────────────────────────────
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Monitor Local Probe"
 $form.StartPosition = "CenterScreen"
 $form.Size = New-Object System.Drawing.Size(760, 560)
-$form.MinimumSize = New-Object System.Drawing.Size(720, 520)
+$form.MinimumSize = New-Object System.Drawing.Size(640, 460)
 $form.Topmost = $true
 
+# Status bar
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.Dock = "Top"
-$statusLabel.Height = 30
+$statusLabel.Height = 28
 $statusLabel.TextAlign = "MiddleLeft"
-$statusLabel.Padding = New-Object System.Windows.Forms.Padding(12, 6, 12, 0)
+$statusLabel.Padding = New-Object System.Windows.Forms.Padding(10, 0, 10, 0)
 $statusLabel.Text = "Status: idle"
 
+# Main button panel
 $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
 $buttonPanel.Dock = "Top"
-$buttonPanel.Height = 52
-$buttonPanel.Padding = New-Object System.Windows.Forms.Padding(8)
+$buttonPanel.Height = 48
+$buttonPanel.Padding = New-Object System.Windows.Forms.Padding(6)
 $buttonPanel.FlowDirection = "LeftToRight"
 
-$btnRunOnce = New-Object System.Windows.Forms.Button
-$btnRunOnce.Text = "Run Once"
-$btnRunOnce.Width = 100
-$btnRunOnce.Height = 32
+$btnRunOnce      = New-Object System.Windows.Forms.Button
+$btnRunOnce.Text  = "Run Once";  $btnRunOnce.Width = 96;  $btnRunOnce.Height = 32
 
-$btnStart = New-Object System.Windows.Forms.Button
-$btnStart.Text = "Start Loop"
-$btnStart.Width = 100
-$btnStart.Height = 32
+$btnStart        = New-Object System.Windows.Forms.Button
+$btnStart.Text    = "Start Loop"; $btnStart.Width = 96; $btnStart.Height = 32
 
-$btnStop = New-Object System.Windows.Forms.Button
-$btnStop.Text = "Stop"
-$btnStop.Width = 100
-$btnStop.Height = 32
-$btnStop.Enabled = $false
+$btnStop         = New-Object System.Windows.Forms.Button
+$btnStop.Text     = "Stop";       $btnStop.Width = 80;  $btnStop.Height = 32
+$btnStop.Enabled  = $false
 
-$btnClose = New-Object System.Windows.Forms.Button
-$btnClose.Text = "Close"
-$btnClose.Width = 100
-$btnClose.Height = 32
+$btnPortScan     = New-Object System.Windows.Forms.Button
+$btnPortScan.Text = "Port Scan";  $btnPortScan.Width = 96; $btnPortScan.Height = 32
 
-$scanPanel = New-Object System.Windows.Forms.Panel
+$btnSecurityScan      = New-Object System.Windows.Forms.Button
+$btnSecurityScan.Text  = "Security Scan"; $btnSecurityScan.Width = 110; $btnSecurityScan.Height = 32
+
+$btnClose        = New-Object System.Windows.Forms.Button
+$btnClose.Text    = "Close";      $btnClose.Width = 80; $btnClose.Height = 32
+
+$buttonPanel.Controls.AddRange(@($btnRunOnce, $btnStart, $btnStop, $btnPortScan, $btnSecurityScan, $btnClose))
+
+# Port scan config row
+$scanPanel = New-Object System.Windows.Forms.TableLayoutPanel
 $scanPanel.Dock = "Top"
-$scanPanel.Height = 110
-$scanPanel.Padding = New-Object System.Windows.Forms.Padding(10, 6, 10, 6)
+$scanPanel.Height = 38
+$scanPanel.Padding = New-Object System.Windows.Forms.Padding(6, 4, 6, 0)
+$scanPanel.ColumnCount = 6
+$scanPanel.RowCount = 1
+[void]$scanPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+[void]$scanPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 28)))
+[void]$scanPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+[void]$scanPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 40)))
+[void]$scanPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+[void]$scanPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 32)))
 
-$scanTitle = New-Object System.Windows.Forms.Label
-$scanTitle.Text = "Port Scan"
-$scanTitle.Location = New-Object System.Drawing.Point(4, 4)
-$scanTitle.AutoSize = $true
+$lblDevice = New-Object System.Windows.Forms.Label; $lblDevice.Text = "Device:"; $lblDevice.Anchor = "Left"; $lblDevice.AutoSize = $true
+$txtDevice = New-Object System.Windows.Forms.TextBox; $txtDevice.Text = $defaultDeviceName; $txtDevice.Dock = "Fill"
+$lblHost   = New-Object System.Windows.Forms.Label; $lblHost.Text = "  Host:";   $lblHost.Anchor = "Left";   $lblHost.AutoSize = $true
+$txtHost   = New-Object System.Windows.Forms.TextBox; $txtHost.Text = $defaultScanHost; $txtHost.Dock = "Fill"
+$lblPorts  = New-Object System.Windows.Forms.Label; $lblPorts.Text = "  Ports:"; $lblPorts.Anchor = "Left";  $lblPorts.AutoSize = $true
+$txtPorts  = New-Object System.Windows.Forms.TextBox; $txtPorts.Text = $defaultScanPorts; $txtPorts.Dock = "Fill"
 
-$scanHint = New-Object System.Windows.Forms.Label
-$scanHint.Text = "Device defaults to all services. Host=AUTO uses each service URL host. Ports come from admin settings."
-$scanHint.Location = New-Object System.Drawing.Point(84, 5)
-$scanHint.AutoSize = $true
+$scanPanel.Controls.Add($lblDevice, 0, 0); $scanPanel.Controls.Add($txtDevice, 1, 0)
+$scanPanel.Controls.Add($lblHost,   2, 0); $scanPanel.Controls.Add($txtHost,   3, 0)
+$scanPanel.Controls.Add($lblPorts,  4, 0); $scanPanel.Controls.Add($txtPorts,  5, 0)
 
-$deviceLabel = New-Object System.Windows.Forms.Label
-$deviceLabel.Text = "Device"
-$deviceLabel.Location = New-Object System.Drawing.Point(4, 34)
-$deviceLabel.AutoSize = $true
-
-$txtDevice = New-Object System.Windows.Forms.TextBox
-$txtDevice.Location = New-Object System.Drawing.Point(64, 30)
-$txtDevice.Size = New-Object System.Drawing.Size(180, 24)
-$txtDevice.Text = "AllServices"
-
-$hostLabel = New-Object System.Windows.Forms.Label
-$hostLabel.Text = "Host"
-$hostLabel.Location = New-Object System.Drawing.Point(258, 34)
-$hostLabel.AutoSize = $true
-
-$txtHost = New-Object System.Windows.Forms.TextBox
-$txtHost.Location = New-Object System.Drawing.Point(304, 30)
-$txtHost.Size = New-Object System.Drawing.Size(180, 24)
-$txtHost.Text = "AUTO"
-
-$portsLabel = New-Object System.Windows.Forms.Label
-$portsLabel.Text = "Ports"
-$portsLabel.Location = New-Object System.Drawing.Point(498, 34)
-$portsLabel.AutoSize = $true
-
-$txtPorts = New-Object System.Windows.Forms.TextBox
-$txtPorts.Location = New-Object System.Drawing.Point(542, 30)
-$txtPorts.Size = New-Object System.Drawing.Size(180, 24)
-$txtPorts.Text = "22,80,443,3389"
-
-$scanNote = New-Object System.Windows.Forms.Label
-$scanNote.Text = "Use comma-separated ports or ranges. With AllServices, Host=AUTO scans each service host."
-$scanNote.Location = New-Object System.Drawing.Point(4, 68)
-$scanNote.AutoSize = $true
-
-$btnPortScan = New-Object System.Windows.Forms.Button
-$btnPortScan.Text = "Scan Ports"
-$btnPortScan.Location = New-Object System.Drawing.Point(622, 64)
-$btnPortScan.Size = New-Object System.Drawing.Size(100, 30)
-
-$buttonPanel.Controls.Add($btnRunOnce)
-$buttonPanel.Controls.Add($btnStart)
-$buttonPanel.Controls.Add($btnStop)
-$buttonPanel.Controls.Add($btnClose)
-
-$scanPanel.Controls.Add($scanTitle)
-$scanPanel.Controls.Add($scanHint)
-$scanPanel.Controls.Add($deviceLabel)
-$scanPanel.Controls.Add($txtDevice)
-$scanPanel.Controls.Add($hostLabel)
-$scanPanel.Controls.Add($txtHost)
-$scanPanel.Controls.Add($portsLabel)
-$scanPanel.Controls.Add($txtPorts)
-$scanPanel.Controls.Add($scanNote)
-$scanPanel.Controls.Add($btnPortScan)
-
+# Log box
 $logBox = New-Object System.Windows.Forms.TextBox
-$logBox.Multiline = $true
-$logBox.ReadOnly = $true
-$logBox.ScrollBars = "Vertical"
-$logBox.WordWrap = $false
-$logBox.Dock = "Fill"
+$logBox.Multiline = $true; $logBox.ReadOnly = $true
+$logBox.ScrollBars = "Vertical"; $logBox.WordWrap = $false; $logBox.Dock = "Fill"
 $logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
 
 $form.Controls.Add($logBox)
@@ -155,28 +175,28 @@ $form.Controls.Add($scanPanel)
 $form.Controls.Add($buttonPanel)
 $form.Controls.Add($statusLabel)
 
-$loopTimer = New-Object System.Windows.Forms.Timer
-$loopTimer.Interval = $loopIntervalSec * 1000
+# ── Timers ────────────────────────────────────────────────────────────────────
+$loopTimer         = New-Object System.Windows.Forms.Timer; $loopTimer.Interval = $loopIntervalSec * 1000
+$pollTimer         = New-Object System.Windows.Forms.Timer; $pollTimer.Interval = 500
+# signalTimer only reads cached state from background runspace - never blocks UI
+$signalTimer       = New-Object System.Windows.Forms.Timer; $signalTimer.Interval = 1000
 
-$pollTimer = New-Object System.Windows.Forms.Timer
-$pollTimer.Interval = 500
+# ── State ─────────────────────────────────────────────────────────────────────
+$script:isLoopEnabled               = $false
+$script:isTaskRunning               = $false
+$script:isProbeOnline               = $false
+$script:lastStatusText              = "Status: idle"
+$script:workerProcess               = $null
+$script:activeTask                  = ""
+$script:stdoutPath                  = ""
+$script:stderrPath                  = ""
+$script:stdoutOffset                = 0
+$script:stderrOffset                = 0
+$script:lastHandledProbeSignal      = ""
+$script:lastHandledPortRequestId    = ""
+$script:lastHandledSecurityScanId   = ""
 
-$signalTimer = New-Object System.Windows.Forms.Timer
-$signalTimer.Interval = 5000
-
-$script:isLoopEnabled = $false
-$script:isTaskRunning = $false
-$script:isProbeOnline = $false
-$script:lastStatusText = "Status: idle"
-$script:workerProcess = $null
-$script:activeTask = ""
-$script:stdoutPath = ""
-$script:stderrPath = ""
-$script:stdoutOffset = 0
-$script:stderrOffset = 0
-$script:lastHandledProbeSignal = ""
-$script:lastHandledPortRequestId = ""
-
+# ── UI helpers ────────────────────────────────────────────────────────────────
 function Append-Log {
   param([string]$Text)
   if ([string]::IsNullOrWhiteSpace($Text)) { return }
@@ -184,11 +204,12 @@ function Append-Log {
 }
 
 function Update-Buttons {
-  $hasPorts = -not [string]::IsNullOrWhiteSpace([string]$txtPorts.Text)
-  $btnRunOnce.Enabled = -not $script:isTaskRunning
-  $btnStart.Enabled = (-not $script:isTaskRunning) -and (-not $script:isLoopEnabled)
-  $btnStop.Enabled = $script:isLoopEnabled -or $script:isTaskRunning
-  $btnPortScan.Enabled = (-not $script:isTaskRunning) -and $hasPorts
+  $busy = $script:isTaskRunning
+  $btnRunOnce.Enabled      = -not $busy
+  $btnStart.Enabled        = (-not $busy) -and (-not $script:isLoopEnabled)
+  $btnStop.Enabled         = $script:isLoopEnabled -or $busy
+  $btnPortScan.Enabled     = -not $busy
+  $btnSecurityScan.Enabled = -not $busy
 }
 
 function Update-Status {
@@ -196,332 +217,197 @@ function Update-Status {
   Update-Buttons
 }
 
-function Read-Api {
-  param([string]$Query)
-  if (-not $apiBase) { return $null }
-  try {
-    $uriBuilder = [System.UriBuilder]::new($apiBase)
-    $uriBuilder.Query = $Query
-    return Invoke-RestMethod -Uri $uriBuilder.Uri.AbsoluteUri -Method Get
-  } catch {
-    return $null
-  }
-}
-
-function Get-PortScanConfig {
-  $response = Read-Api "action=getPortScanConfig"
-  if ($response -and $response.ok) { return $response.data }
-  return $null
-}
-
-function Get-PortScanSignal {
-  $response = Read-Api "action=getPortScanSignal"
-  if ($response -and $response.ok) { return $response.data }
-  return $null
-}
-
-function Get-ProbeRunSignal {
-  $response = Read-Api ("action=getProbeRunSignal&probe_id=" + [System.Uri]::EscapeDataString($probeId))
-  if ($response -and $response.ok) { return $response.data }
-  return $null
-}
-
-function Refresh-ProbeState {
-  if (-not $apiBase) { return }
-  try {
-    $response = Read-Api "action=listProbes"
-    if (-not ($response -and $response.ok -and $response.data)) { return }
-    foreach ($probe in @($response.data)) {
-      if (-not [string]::Equals(([string]$probe.probe_id).Trim(), $probeId.Trim(), [System.StringComparison]::OrdinalIgnoreCase)) {
-        continue
-      }
-      $lastSeenAt = $null
-      try { $lastSeenAt = [datetime]::Parse([string]$probe.last_seen_at) } catch {}
-      if ($lastSeenAt) {
-        $script:isProbeOnline = (([datetime]::UtcNow - $lastSeenAt.ToUniversalTime()).TotalMinutes -le 3.0)
-      }
-      break
-    }
-  } catch {
-  }
-}
-
-function Apply-PortScanConfig {
-  param([object]$Config)
-  $ports = ""
-  if ($Config) {
-    $ports = [string]$Config.ports
-  }
-  if (-not [string]::IsNullOrWhiteSpace($ports)) {
-    $txtPorts.Text = $ports.Trim()
-    $scanNote.Text = "Admin-configured ports loaded: " + $ports.Trim()
-  }
-}
-
-function Load-PortScanConfig {
-  $config = Get-PortScanConfig
-  if ($config) {
-    Apply-PortScanConfig -Config $config
-    if (-not [string]::IsNullOrWhiteSpace([string]$config.ports)) {
-      Append-Log ("Loaded global Port Scan ports: " + [string]$config.ports)
-    }
-  } else {
-    Append-Log "Failed to load global Port Scan config."
-  }
-  Update-Buttons
-}
-
+# ── Temp file helpers ─────────────────────────────────────────────────────────
 function Cleanup-TempFiles {
-  foreach ($path in @($script:stdoutPath, $script:stderrPath)) {
-    if ($path -and (Test-Path $path)) {
-      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-    }
+  foreach ($p in @($script:stdoutPath, $script:stderrPath)) {
+    if ($p -and (Test-Path $p)) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
   }
-  $script:stdoutPath = ""
-  $script:stderrPath = ""
-  $script:stdoutOffset = 0
-  $script:stderrOffset = 0
+  $script:stdoutPath = ""; $script:stderrPath = ""; $script:stdoutOffset = 0; $script:stderrOffset = 0
 }
 
 function Read-NewLogChunk {
   param([string]$Path, [int]$Offset)
-  if (-not $Path -or -not (Test-Path $Path)) {
-    return @{ Offset = $Offset; Text = "" }
-  }
-  try {
-    $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop
-  } catch {
-    return @{ Offset = $Offset; Text = "" }
-  }
+  if (-not $Path -or -not (Test-Path $Path)) { return @{ Offset = $Offset; Text = "" } }
+  try { $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop } catch { return @{ Offset = $Offset; Text = "" } }
   if ($null -eq $text) { $text = "" }
-  if ($text.Length -le $Offset) {
-    return @{ Offset = $text.Length; Text = "" }
-  }
+  if ($text.Length -le $Offset) { return @{ Offset = $text.Length; Text = "" } }
   return @{ Offset = $text.Length; Text = $text.Substring($Offset) }
 }
 
 function Flush-ProcessLogs {
-  $stdout = Read-NewLogChunk -Path $script:stdoutPath -Offset $script:stdoutOffset
-  $script:stdoutOffset = $stdout.Offset
-  if ($stdout.Text) {
-    foreach ($line in ($stdout.Text -split "`r?`n")) {
-      if ($line) { Append-Log $line }
-    }
-  }
-
-  $stderr = Read-NewLogChunk -Path $script:stderrPath -Offset $script:stderrOffset
-  $script:stderrOffset = $stderr.Offset
-  if ($stderr.Text) {
-    foreach ($line in ($stderr.Text -split "`r?`n")) {
-      if ($line) { Append-Log $line }
-    }
-  }
+  $o = Read-NewLogChunk -Path $script:stdoutPath -Offset $script:stdoutOffset
+  $script:stdoutOffset = $o.Offset
+  if ($o.Text) { foreach ($ln in ($o.Text -split "`r?`n")) { if ($ln) { Append-Log $ln } } }
+  $e = Read-NewLogChunk -Path $script:stderrPath -Offset $script:stderrOffset
+  $script:stderrOffset = $e.Offset
+  if ($e.Text) { foreach ($ln in ($e.Text -split "`r?`n")) { if ($ln) { Append-Log $ln } } }
 }
 
 function Finish-Worker {
   param([string]$Reason = "")
-
-  if ($pollTimer.Enabled) {
-    $pollTimer.Stop()
-  }
-
+  if ($pollTimer.Enabled) { $pollTimer.Stop() }
   Flush-ProcessLogs
-
   $exitCode = 0
   if ($script:workerProcess) {
-    try {
-      if ($script:workerProcess.HasExited) {
-        $exitCode = $script:workerProcess.ExitCode
-      }
-    } catch {
-      $exitCode = -1
-    }
+    try { if ($script:workerProcess.HasExited) { $exitCode = $script:workerProcess.ExitCode } } catch { $exitCode = -1 }
     try { $script:workerProcess.Dispose() } catch {}
   }
-
   $completedTask = $script:activeTask
   $script:workerProcess = $null
   $script:isTaskRunning = $false
-
-  if ($completedTask -eq "probe" -and $exitCode -eq 0) {
-    $script:isProbeOnline = $true
-  }
-
-  $displayExitCode = if ($null -eq $exitCode -or [string]::IsNullOrWhiteSpace([string]$exitCode)) { "unknown" } else { [string]$exitCode }
-
+  if ($completedTask -eq "probe" -and $exitCode -eq 0) { $script:isProbeOnline = $true }
+  $ec = if ([string]::IsNullOrWhiteSpace([string]$exitCode)) { "unknown" } else { [string]$exitCode }
   if ($Reason) {
     Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] " + $Reason)
-  } elseif (-not ($completedTask -eq "remote-portscan" -and $exitCode -eq 3)) {
-    Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] " + $completedTask + " finished, exit code " + $displayExitCode)
+  } elseif (-not (($completedTask -eq "remote-portscan" -or $completedTask -eq "remote-securityscan") -and $exitCode -eq 3)) {
+    $lbl = switch ($completedTask) {
+      "probe"               { "Probe run" }
+      "port-scan"           { "Port Scan" }
+      "security-scan"       { "Security Scan" }
+      "remote-portscan"     { "Remote Port Scan" }
+      "remote-securityscan" { "Remote Security Scan" }
+      default               { $completedTask }
+    }
+    Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] " + $lbl + " finished, exit code " + $ec)
   }
-
-  if ($script:isLoopEnabled) {
-    $script:lastStatusText = "Status: waiting for next loop run"
-  } elseif ($completedTask -like "*portscan*" -or $script:isProbeOnline) {
-    $script:lastStatusText = if ($script:isProbeOnline) { "Status: probe online" } else { "Status: idle" }
-  } else {
-    $script:lastStatusText = "Status: idle"
-  }
-
+  $script:lastStatusText = if ($script:isLoopEnabled) { "Status: waiting for next loop run" } `
+    elseif ($script:isProbeOnline) { "Status: probe online" } else { "Status: idle" }
   $script:activeTask = ""
   Cleanup-TempFiles
   Update-Status
 }
 
 function Start-Worker {
-  param(
-    [string]$TaskName,
-    [string[]]$ArgumentList,
-    [string]$StartMessage,
-    [string]$RunningStatus
-  )
-
-  if ($script:isTaskRunning) {
-    Append-Log "Another task is already in progress."
-    return $false
-  }
-
+  param([string]$TaskName, [string[]]$ArgumentList, [string]$StartMessage, [string]$RunningStatus)
+  if ($script:isTaskRunning) { Append-Log "Another task is already in progress."; return $false }
   $script:stdoutPath = [System.IO.Path]::GetTempFileName()
   $script:stderrPath = [System.IO.Path]::GetTempFileName()
-  $script:stdoutOffset = 0
-  $script:stderrOffset = 0
-
+  $script:stdoutOffset = 0; $script:stderrOffset = 0
   try {
-    $script:activeTask = $TaskName
-    $script:workerProcess = Start-Process -FilePath $exePath -ArgumentList $ArgumentList -WindowStyle Hidden -PassThru -RedirectStandardOutput $script:stdoutPath -RedirectStandardError $script:stderrPath
+    $script:activeTask    = $TaskName
+    $script:workerProcess = Start-Process -FilePath $exePath `
+      -ArgumentList $ArgumentList `
+      -WindowStyle Hidden -PassThru `
+      -RedirectStandardOutput $script:stdoutPath `
+      -RedirectStandardError  $script:stderrPath
   } catch {
     Cleanup-TempFiles
-    $script:activeTask = ""
-    $script:isTaskRunning = $false
+    $script:activeTask = ""; $script:isTaskRunning = $false
     $script:lastStatusText = "Status: start failed"
     Append-Log ("Failed to start " + $TaskName + ": " + $_.Exception.Message)
-    Update-Status
-    return $false
+    Update-Status; return $false
   }
-
-  $script:isTaskRunning = $true
+  $script:isTaskRunning  = $true
   $script:lastStatusText = $RunningStatus
   Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] " + $StartMessage)
   Update-Status
-  if (-not $pollTimer.Enabled) {
-    $pollTimer.Start()
-  }
+  if (-not $pollTimer.Enabled) { $pollTimer.Start() }
   return $true
 }
 
+# ── Task launchers ────────────────────────────────────────────────────────────
 function Start-ProbeProcess {
   param([string]$ForceServiceId = "", [string]$TriggerLabel = "")
-
-  $args = @("--run-once", "--no-result-window")
-  if (Test-Path $cfgPath) {
-    $args += @("--config", $cfgPath)
-  }
-  if (-not [string]::IsNullOrWhiteSpace($ForceServiceId)) {
-    $args += @("--service-id", $ForceServiceId)
-  }
-
-  $label = if ([string]::IsNullOrWhiteSpace($TriggerLabel)) { "Probe started" } else { $TriggerLabel }
-  [void](Start-Worker -TaskName "probe" -ArgumentList $args -StartMessage $label -RunningStatus "Status: running")
+  $a = @("--run-once", "--no-result-window")
+  if (Test-Path $cfgPath) { $a += @("--config", $cfgPath) }
+  if (-not [string]::IsNullOrWhiteSpace($ForceServiceId)) { $a += @("--service-id", $ForceServiceId) }
+  $lbl = if ([string]::IsNullOrWhiteSpace($TriggerLabel)) { "Probe started" } else { $TriggerLabel }
+  [void](Start-Worker -TaskName "probe" -ArgumentList $a -StartMessage $lbl -RunningStatus "Status: running")
 }
 
 function Start-PortScanProcess {
-  Load-PortScanConfig
-  $deviceName = [string]$txtDevice.Text
-  $scanHost = [string]$txtHost.Text
-  $scanPorts = [string]$txtPorts.Text
-  $normalizedDeviceName = ($deviceName -replace '[\s_\-:]+', '')
-  $isAllServices = [string]::Equals($normalizedDeviceName, 'AllServices', [System.StringComparison]::OrdinalIgnoreCase) -or ($normalizedDeviceName -eq '所有測試項') -or [string]::Equals($normalizedDeviceName, 'All', [System.StringComparison]::OrdinalIgnoreCase)
+  $devName  = $txtDevice.Text.Trim()
+  $scanHost = $txtHost.Text.Trim()
+  $ports    = $txtPorts.Text.Trim()
+  if (-not $scanHost) { Append-Log "Port Scan: Host field is required."; return }
+  if (-not $ports)    { $ports = "22,80,443,3389" }
+  $a = @("--port-scan", "--no-result-window")
+  if (Test-Path $cfgPath) { $a += @("--config", $cfgPath) }
+  if ($devName) { $a += @("--device-name", $devName) }
+  $a += @("--scan-host", $scanHost, "--scan-ports", $ports)
+  [void](Start-Worker -TaskName "port-scan" -ArgumentList $a -StartMessage "Port Scan started ($scanHost)" -RunningStatus "Status: port scan running")
+}
 
-  if ((-not $isAllServices) -and [string]::IsNullOrWhiteSpace($scanHost)) {
-    Append-Log "Port Scan host is required."
-    return
-  }
-  if ([string]::IsNullOrWhiteSpace($scanPorts)) {
-    Append-Log "Port Scan ports are required."
-    return
-  }
-  if ([string]::IsNullOrWhiteSpace($deviceName)) {
-    $deviceName = $scanHost
-    $txtDevice.Text = $deviceName
-  }
-  if ($isAllServices -and [string]::IsNullOrWhiteSpace($scanHost)) {
-    $scanHost = "AUTO"
-    $txtHost.Text = $scanHost
-  }
-
-  $safeDeviceName = '"' + ($deviceName -replace '"', '\"') + '"'
-  $safeScanHost = '"' + ($scanHost -replace '"', '\"') + '"'
-  $safeScanPorts = '"' + ($scanPorts -replace '"', '\"') + '"'
-  $args = @("--port-scan", "--scan-host", $safeScanHost, "--scan-ports", $safeScanPorts, "--device-name", $safeDeviceName)
-  if (Test-Path $cfgPath) {
-    $safeCfgPath = '"' + ($cfgPath -replace '"', '\"') + '"'
-    $args += @("--config", $safeCfgPath)
-  }
-
-  [void](Start-Worker -TaskName "manual-portscan" -ArgumentList $args -StartMessage ("Port Scan started for " + $deviceName + " (" + $scanHost + ")") -RunningStatus "Status: port scan running")
+function Start-SecurityScanProcess {
+  $a = @("--security-scan", "--no-result-window")
+  if (Test-Path $cfgPath) { $a += @("--config", $cfgPath) }
+  [void](Start-Worker -TaskName "security-scan" -ArgumentList $a -StartMessage "Security Scan started" -RunningStatus "Status: security scan running")
 }
 
 function Start-RequestedPortScanProcess {
-  $args = @("--claim-port-scan-request", "--no-result-window")
-  if (Test-Path $cfgPath) {
-    $args += @("--config", $cfgPath)
-  }
+  $a = @("--claim-port-scan-request", "--no-result-window")
+  if (Test-Path $cfgPath) { $a += @("--config", $cfgPath) }
+  [void](Start-Worker -TaskName "remote-portscan" -ArgumentList $a -StartMessage "Remote Port Scan started" -RunningStatus "Status: port scan running")
+}
 
-  [void](Start-Worker -TaskName "remote-portscan" -ArgumentList $args -StartMessage "Remote Port Scan requested" -RunningStatus "Status: port scan running")
+function Start-RequestedSecurityScanProcess {
+  $a = @("--claim-security-scan-request", "--no-result-window")
+  if (Test-Path $cfgPath) { $a += @("--config", $cfgPath) }
+  [void](Start-Worker -TaskName "remote-securityscan" -ArgumentList $a -StartMessage "Remote Security Scan started" -RunningStatus "Status: security scan running")
 }
 
 function Test-RecentSignal {
   param([string]$RequestedAt, [int]$MaxAgeSeconds = 180)
   if ([string]::IsNullOrWhiteSpace($RequestedAt)) { return $false }
   try {
-    $requestedTime = [datetime]::Parse($RequestedAt).ToUniversalTime()
-    $ageSeconds = ([datetime]::UtcNow - $requestedTime).TotalSeconds
-    return $ageSeconds -ge 0 -and $ageSeconds -le $MaxAgeSeconds
-  } catch {
-    return $false
-  }
+    $t = [datetime]::Parse($RequestedAt).ToUniversalTime()
+    $age = ([datetime]::UtcNow - $t).TotalSeconds
+    return $age -ge 0 -and $age -le $MaxAgeSeconds
+  } catch { return $false }
 }
 
+# ── Timer events ──────────────────────────────────────────────────────────────
 $pollTimer.Add_Tick({
-  if (-not $script:workerProcess) {
-    $pollTimer.Stop()
-    return
-  }
+  if (-not $script:workerProcess) { $pollTimer.Stop(); return }
   Flush-ProcessLogs
-  try {
-    if (-not $script:workerProcess.HasExited) { return }
-  } catch {
-    return
-  }
+  try { if (-not $script:workerProcess.HasExited) { return } } catch { return }
   Finish-Worker
 })
 
+# Reads cached signal state from background runspace - no HTTP on UI thread
 $signalTimer.Add_Tick({
   if ($script:isTaskRunning) { return }
-
-  $portSignal = Get-PortScanSignal
-  if ($portSignal) {
-    $requestId = [string]$portSignal.request_id
-    $status = [string]$portSignal.status
-    $requestedAt = [string]$portSignal.requested_at
-    if ($requestId -and ($requestId -ne $script:lastHandledPortRequestId) -and [string]::Equals($status, "pending", [System.StringComparison]::OrdinalIgnoreCase) -and (Test-RecentSignal -RequestedAt $requestedAt)) {
-      $script:lastHandledPortRequestId = $requestId
-      Start-RequestedPortScanProcess
-      return
+  try {
+    # Port scan signal
+    $portSig = $script:sigState.PortSignal
+    if ($portSig) {
+      $rid   = [string]$portSig.request_id
+      $stat  = [string]$portSig.status
+      $reqAt = [string]$portSig.requested_at
+      if ($rid -and $rid -ne $script:lastHandledPortRequestId -and
+          [string]::Equals($stat, "pending", [System.StringComparison]::OrdinalIgnoreCase) -and
+          (Test-RecentSignal -RequestedAt $reqAt)) {
+        $script:lastHandledPortRequestId = $rid
+        Start-RequestedPortScanProcess
+        return
+      }
     }
-  }
-
-  $signal = Get-ProbeRunSignal
-  if (-not $signal) { return }
-  $requestedAt = [string]$signal.requested_at
-  if ([string]::IsNullOrWhiteSpace($requestedAt)) { return }
-  if ($requestedAt -eq $script:lastHandledProbeSignal) { return }
-  if (-not (Test-RecentSignal -RequestedAt $requestedAt)) { return }
-
-  $script:lastHandledProbeSignal = $requestedAt
-  $serviceName = [string]$signal.service_name
-  if ([string]::IsNullOrWhiteSpace($serviceName)) { $serviceName = "all services" }
-  Start-ProbeProcess -ForceServiceId ([string]$signal.service_id) -TriggerLabel ("Remote refresh requested: " + $serviceName)
+    # Security scan signal
+    $secSig = $script:sigState.SecSignal
+    if ($secSig) {
+      $rid   = [string]$secSig.request_id
+      $stat  = [string]$secSig.status
+      $reqAt = [string]$secSig.requested_at
+      if ($rid -and $rid -ne $script:lastHandledSecurityScanId -and
+          [string]::Equals($stat, "pending", [System.StringComparison]::OrdinalIgnoreCase) -and
+          (Test-RecentSignal -RequestedAt $reqAt)) {
+        $script:lastHandledSecurityScanId = $rid
+        Start-RequestedSecurityScanProcess
+        return
+      }
+    }
+    # Probe run signal
+    $probeSig = $script:sigState.ProbeSignal
+    if (-not $probeSig) { return }
+    $reqAt = [string]$probeSig.requested_at
+    if ([string]::IsNullOrWhiteSpace($reqAt)) { return }
+    if ($reqAt -eq $script:lastHandledProbeSignal) { return }
+    if (-not (Test-RecentSignal -RequestedAt $reqAt)) { return }
+    $script:lastHandledProbeSignal = $reqAt
+    $svcName = [string]$probeSig.service_name
+    if ([string]::IsNullOrWhiteSpace($svcName)) { $svcName = "all services" }
+    Start-ProbeProcess -ForceServiceId ([string]$probeSig.service_id) -TriggerLabel ("Remote refresh: " + $svcName)
+  } catch {}
 })
 
 $loopTimer.Add_Tick({
@@ -530,27 +416,18 @@ $loopTimer.Add_Tick({
   Start-ProbeProcess
 })
 
-$btnRunOnce.Add_Click({
-  Start-ProbeProcess
-})
-
-$btnPortScan.Add_Click({
-  Start-PortScanProcess
-})
+# ── Button events ─────────────────────────────────────────────────────────────
+$btnRunOnce.Add_Click({ Start-ProbeProcess })
 
 $btnStart.Add_Click({
   if ($script:isLoopEnabled) { return }
-  $script:isLoopEnabled = $true
+  $script:isLoopEnabled  = $true
   $script:lastStatusText = "Status: waiting for next loop run"
   Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] Loop mode started")
   Update-Status
   $loopTimer.Start()
-  if (-not $signalTimer.Enabled) {
-    $signalTimer.Start()
-  }
-  if (-not $script:isTaskRunning) {
-    Start-ProbeProcess
-  }
+  if (-not $signalTimer.Enabled) { $signalTimer.Start() }
+  if (-not $script:isTaskRunning) { Start-ProbeProcess }
 })
 
 $btnStop.Add_Click({
@@ -559,25 +436,24 @@ $btnStop.Add_Click({
     $loopTimer.Stop()
     Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] Loop mode stopped")
   }
-
   if ($script:isTaskRunning -and $script:workerProcess) {
     try {
       Stop-Process -Id $script:workerProcess.Id -Force -ErrorAction Stop
       Start-Sleep -Milliseconds 120
       Finish-Worker -Reason "Current task stopped"
       return
-    } catch {
-      Append-Log ("Failed to stop current task: " + $_.Exception.Message)
-    }
+    } catch { Append-Log ("Failed to stop: " + $_.Exception.Message) }
   }
-
   $script:lastStatusText = "Status: idle"
   Update-Status
 })
 
+$btnPortScan.Add_Click({ Start-PortScanProcess })
+
+$btnSecurityScan.Add_Click({ Start-SecurityScanProcess })
+
 $btnClose.Add_Click({
-  $loopTimer.Stop()
-  $signalTimer.Stop()
+  $loopTimer.Stop(); $signalTimer.Stop()
   if ($script:isTaskRunning -and $script:workerProcess) {
     try { Stop-Process -Id $script:workerProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
   }
@@ -587,28 +463,38 @@ $btnClose.Add_Click({
 
 $form.Add_FormClosing({
   try {
-    $loopTimer.Stop()
-    $signalTimer.Stop()
+    $loopTimer.Stop(); $signalTimer.Stop()
+    $script:sigState.Stop = $true
     if ($script:isTaskRunning -and $script:workerProcess) {
       Stop-Process -Id $script:workerProcess.Id -Force -ErrorAction SilentlyContinue
     }
-  } catch {
-  }
+  } catch {}
 })
 
 $form.Add_Shown({
-  Append-Log "Control window ready."
-  Append-Log "Use Run Once for a single check, or Start Loop for repeated runs."
-Append-Log "Port Scan is ready with Device=AllServices, Host=AUTO(service hosts), and Ports from admin config when available."
-  Append-Log "Admin-triggered port scan requests are polled automatically while this window is open."
+  Append-Log "Probe control window ready."
+  Append-Log "Run Once: single check  |  Start Loop: timed loop"
+  Append-Log "Port Scan: fill Device/Host/Ports then click Port Scan"
+  Append-Log "Security Scan: scans all monitored hosts"
+  Append-Log "Admin-triggered scans polled every 5 sec in background."
   Append-Log ("Loop interval: " + $loopIntervalSec + " sec")
-  Append-Log "Remote refresh signal poll: 5 sec"
-  Load-PortScanConfig
-  Refresh-ProbeState
-  if (-not $signalTimer.Enabled) {
-    $signalTimer.Start()
-  }
+  $signalTimer.Start()
   Update-Status
 })
 
 [void]$form.ShowDialog()
+
+} catch {
+  $script:sigState.Stop = $true
+  [System.Windows.Forms.MessageBox]::Show(
+    "Startup error:`r`n" + $_.Exception.Message + "`r`n`r`n" + $_.ScriptStackTrace,
+    "Monitor Local Probe - Error",
+    [System.Windows.Forms.MessageBoxButtons]::OK,
+    [System.Windows.Forms.MessageBoxIcon]::Error
+  ) | Out-Null
+}
+
+# Cleanup background runspace
+try { $script:sigState.Stop = $true; Start-Sleep -Milliseconds 300 } catch {}
+try { $sigPS.Stop(); $sigPS.Dispose() } catch {}
+try { $sigRunspace.Close(); $sigRunspace.Dispose() } catch {}
