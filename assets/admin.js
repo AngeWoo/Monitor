@@ -29,6 +29,10 @@ const deleteProgressWrap = document.getElementById('deleteProgressWrap');
 const deleteProgressBar = document.getElementById('deleteProgressBar');
 const deleteProgressPct = document.getElementById('deleteProgressPct');
 const lineUserStats = document.getElementById('lineUserStats');
+const adminSecurityScansBody = document.getElementById('adminSecurityScansBody');
+const securityScanMessage = document.getElementById('securityScanMessage');
+const triggerSecurityScanBtn = document.getElementById('triggerSecurityScanBtn');
+const securityScanRequestLog = document.getElementById('securityScanRequestLog');
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingLabel = document.getElementById('loadingLabel');
 const loadingPercent = document.getElementById('loadingPercent');
@@ -40,6 +44,9 @@ const DATES_CACHE_TTL_MS = 5 * 60 * 1000;
 const PORT_SCAN_WATCH_INTERVAL_MS = 3000;
 const PORT_SCAN_WATCH_TIMEOUT_MS = 180000;
 const PORT_SCAN_LOG_LIMIT = 60;
+const SECURITY_SCAN_WATCH_INTERVAL_MS = 4000;
+const SECURITY_SCAN_WATCH_TIMEOUT_MS = 300000;
+const SECURITY_SCAN_LOG_LIMIT = 80;
 
 let services = [];
 let probes = [];
@@ -48,6 +55,8 @@ let deleteProgressTimer = null;
 let deleteProgressValue = 0;
 let portScanWatchToken = 0;
 let portScanLogLines = [];
+let securityScanWatchToken = 0;
+let securityScanLogLines = [];
 const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
 
 if (misplacedStartPortScanBtn) {
@@ -286,6 +295,162 @@ async function watchPortScanRequest(meta) {
   }
 }
 
+function resetSecurityScanRequestLog() {
+  securityScanLogLines = [];
+  if (securityScanRequestLog) securityScanRequestLog.textContent = '';
+}
+
+function appendSecurityScanRequestLog(text, timePrefix) {
+  if (!securityScanRequestLog) return;
+  const prefix = timePrefix ? `[${timePrefix}] ` : '';
+  const line = `${prefix}${String(text || '')}`;
+  securityScanLogLines.push(line);
+  if (securityScanLogLines.length > SECURITY_SCAN_LOG_LIMIT) {
+    securityScanLogLines.shift();
+  }
+  securityScanRequestLog.textContent = securityScanLogLines.join('\n');
+  securityScanRequestLog.scrollTop = securityScanRequestLog.scrollHeight;
+}
+
+function formatSecurityScanSessionTime(at) {
+  if (!at) return '';
+  try {
+    return new Date(at).toLocaleTimeString('zh-Hant', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch (_) { return ''; }
+}
+
+function buildSecurityScanSessionMarker(session) {
+  if (!session) return '';
+  return `${session.request_id || ''}|${session.status || ''}|${session.updated_at || ''}|${(session.log_lines || []).length}`;
+}
+
+async function fetchSecurityScanSession() {
+  const res = await apiGet({ action: 'getSecurityScanSignal' }, 120000);
+  if (!res || res.ok === false) throw new Error(res?.error || 'getSecurityScanSignal failed');
+  return res.data || null;
+}
+
+async function watchSecurityScanRequest(meta) {
+  const watchToken = ++securityScanWatchToken;
+  const requestId = safeText(meta?.requestId || '');
+  const onlineProbeCount = Math.max(0, Number(meta?.onlineProbeCount || 0) || 0);
+  const startedAt = Date.now();
+  let pollRound = 0;
+  let lastMarker = '';
+  let lastLogCount = 0;
+  let sawRunning = false;
+  let sawCompletion = false;
+
+  appendSecurityScanRequestLog(
+    onlineProbeCount > 0
+      ? `已送出安全性掃描要求，等待 ${onlineProbeCount} 個上線 Probe 回報。`
+      : `已送出安全性掃描要求，但目前沒有偵測到上線中的 Probe。`
+  );
+
+  while (watchToken === securityScanWatchToken && Date.now() - startedAt < SECURITY_SCAN_WATCH_TIMEOUT_MS) {
+    pollRound += 1;
+    try {
+      const session = await fetchSecurityScanSession();
+      if (!session) {
+        appendSecurityScanRequestLog('目前找不到 Security Scan session。');
+        break;
+      }
+      if (requestId && safeText(session.request_id || '') !== requestId) {
+        appendSecurityScanRequestLog('偵測到較新的安全性掃描要求，停止追蹤本次 session。');
+        break;
+      }
+
+      const marker = buildSecurityScanSessionMarker(session);
+      const logs = Array.isArray(session.log_lines) ? session.log_lines : [];
+      if (marker !== lastMarker) {
+        for (let i = lastLogCount; i < logs.length; i++) {
+          const entry = logs[i];
+          const msg = safeText(entry?.message || '');
+          if (msg) appendSecurityScanRequestLog(msg, formatSecurityScanSessionTime(entry?.at));
+        }
+        lastLogCount = logs.length;
+        lastMarker = marker;
+      } else if (pollRound === 1 || pollRound % 3 === 0) {
+        appendSecurityScanRequestLog(`第 ${pollRound} 次輪詢：session 仍在 ${safeText(session.status || 'pending')}。`);
+      }
+
+      if (safeText(session.status || '') === 'running') sawRunning = true;
+      if (safeText(session.status || '') === 'completed' || safeText(session.status || '') === 'failed') {
+        sawCompletion = true;
+        await Promise.allSettled([loadSecurityScans(), loadProbes()]);
+        if (session.result_summary) {
+          appendSecurityScanRequestLog(session.result_summary, formatSecurityScanSessionTime(session.completed_at));
+        }
+        break;
+      }
+    } catch (error) {
+      appendSecurityScanRequestLog(`輪詢失敗: ${safeText(error?.message || error)}`);
+    }
+
+    if (watchToken !== securityScanWatchToken) break;
+    await delay(SECURITY_SCAN_WATCH_INTERVAL_MS);
+  }
+
+  if (watchToken !== securityScanWatchToken) return;
+  if (!sawCompletion) {
+    appendSecurityScanRequestLog(
+      sawRunning
+        ? '追蹤時間到，安全性掃描可能仍在進行中。'
+        : '追蹤結束，尚未看到 Probe claim 這次安全性掃描要求。'
+    );
+  }
+}
+
+async function handleRequestSecurityScanWithOverlay() {
+  securityScanWatchToken += 1;
+  resetSecurityScanRequestLog();
+  appendSecurityScanRequestLog('正在送出安全性掃描要求...');
+
+  let requestMeta = null;
+  try {
+    await runTransientLoading('正在通知 Probe 執行安全性掃描...', async (progress) => {
+      progress(14);
+      const res = await apiGet({
+        action: 'requestSecurityScanSignal',
+        requested_by: 'admin',
+        note: 'admin security scan'
+      }, 120000);
+      if (!res || res.ok === false) throw new Error(res?.error || 'requestSecurityScanSignal failed');
+
+      const onlineProbeCount = Math.max(0, Number(res.online_probe_count || 0) || 0);
+      requestMeta = {
+        requestId: safeText(res.data?.request_id || ''),
+        requestedAt: safeText(res.data?.requested_at || new Date().toISOString()),
+        onlineProbeCount
+      };
+      progress(34);
+
+      if (onlineProbeCount > 0) {
+        await animateProgressDuringWait(6000, progress, 34, 84);
+      } else {
+        progress(84);
+      }
+
+      await loadProbes((p) => progress(84 + p * 0.08));
+
+      if (securityScanMessage) {
+        securityScanMessage.textContent = onlineProbeCount > 0
+          ? `已通知 ${onlineProbeCount} 個上線中的 Probe 執行安全性掃描。`
+          : '目前沒有上線中的 Probe，可先確認 Probe 視窗是否在線。';
+      }
+    });
+  } catch (err) {
+    const msg = safeText(err?.message || err || '未知錯誤');
+    appendSecurityScanRequestLog(`送出失敗: ${msg}`);
+    if (securityScanMessage) securityScanMessage.textContent = `送出安全性掃描要求失敗: ${msg}`;
+    return;
+  }
+
+  if (requestMeta) {
+    void watchSecurityScanRequest(requestMeta);
+  }
+}
+
 async function loadServices(onProgress) {
   if (typeof onProgress === 'function') onProgress(12);
   const res = await apiGet({ action: 'listServices' }, 120000);
@@ -310,6 +475,49 @@ async function loadProbes(onProgress) {
     : '目前沒有 Probe 節點。';
   if (typeof onProgress === 'function') onProgress(100);
   return probes;
+}
+
+async function loadSecurityScans(onProgress) {
+  if (typeof onProgress === 'function') onProgress(12);
+  const res = await apiGet({ action: 'listSecurityScans' }, 120000).catch(() => ({ ok: false, data: [] }));
+  if (typeof onProgress === 'function') onProgress(72);
+  const scans = res && res.ok ? (Array.isArray(res.data) ? res.data : []) : [];
+  renderAdminSecurityScans(scans);
+  if (securityScanMessage) {
+    securityScanMessage.textContent = scans.length
+      ? `已載入 ${scans.length} 筆安全性掃描結果。`
+      : '尚無安全性掃描資料。請透過 probe --security-scan 執行掃描。';
+  }
+  if (typeof onProgress === 'function') onProgress(100);
+  return scans;
+}
+
+function renderAdminSecurityScans(scans) {
+  if (!adminSecurityScansBody) return;
+  if (!scans || !scans.length) {
+    adminSecurityScansBody.innerHTML = '<tr><td colspan="7">尚無安全性掃描資料</td></tr>';
+    return;
+  }
+  adminSecurityScansBody.innerHTML = scans.map((scan) => {
+    const name = escapeHtmlText(safeText(scan.service_name || scan.service_id || '-'));
+    const host = escapeHtmlText(safeText(scan.host || '-'));
+    const grade = String(scan.grade || '-').toUpperCase();
+    const gradeColor = grade === 'A' ? '#22c55e' : grade === 'B' ? '#84cc16' : grade === 'C' ? '#eab308' : grade === 'D' ? '#f97316' : grade === 'F' ? '#ef4444' : '#94a3b8';
+    const isHttps = scan.is_https ? '✓' : '✗';
+    const httpsStyle = scan.is_https ? 'color:#22c55e' : 'color:#ef4444';
+    const scannedAt = fmtDate(scan.scanned_at);
+    const probeId = escapeHtmlText(safeText(scan.probe_id || '-'));
+    return `
+      <tr>
+        <td data-label="服務名稱">${name}</td>
+        <td data-label="Host">${host}</td>
+        <td data-label="等級"><span style="background:${gradeColor};color:#fff;padding:2px 10px;border-radius:4px;font-weight:700">${escapeHtmlText(grade)}</span></td>
+        <td data-label="問題數">${Number(scan.total_issues || 0)}</td>
+        <td data-label="HTTPS"><span style="${httpsStyle};font-weight:600">${isHttps}</span></td>
+        <td data-label="掃描時間">${escapeHtmlText(scannedAt)}</td>
+        <td data-label="Probe">${probeId}</td>
+      </tr>`;
+  }).join('');
 }
 
 function resetAddFormDefaults() {
@@ -1373,6 +1581,31 @@ if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendRepor
 if (portScanConfigForm) portScanConfigForm.addEventListener('submit', handleSavePortScanConfig);
 if (reloadPortScanConfigBtn) reloadPortScanConfigBtn.addEventListener('click', handleReloadPortScanConfigWithOverlay);
 if (triggerPortScanBtn) triggerPortScanBtn.addEventListener('click', handleRequestPortScanWithOverlay);
+if (triggerSecurityScanBtn) triggerSecurityScanBtn.addEventListener('click', handleRequestSecurityScanWithOverlay);
+
+const clearSecurityScansBtn = document.getElementById('clearSecurityScansBtn');
+if (clearSecurityScansBtn) clearSecurityScansBtn.addEventListener('click', async function() {
+  const confirmed = window.confirm('確定要刪除所有安全性掃描結果嗎？');
+  if (!confirmed) {
+    if (securityScanMessage) securityScanMessage.textContent = '已取消刪除。';
+    return;
+  }
+  clearSecurityScansBtn.disabled = true;
+  if (securityScanMessage) securityScanMessage.textContent = '正在刪除掃描結果...';
+  try {
+    const res = await apiGet({ action: 'clearSecurityScans' }, 30000);
+    if (!res || res.ok === false) throw new Error(res?.error || 'clearSecurityScans failed');
+    const deleted = res.deleted ?? res.data?.deleted ?? 0;
+    if (securityScanMessage) securityScanMessage.textContent = `已刪除 ${deleted} 筆掃描結果。`;
+    if (adminSecurityScansBody) adminSecurityScansBody.innerHTML = '<tr><td colspan="7">尚無安全性掃描資料</td></tr>';
+    await loadSecurityScans();
+  } catch (err) {
+    if (securityScanMessage) securityScanMessage.textContent = `刪除失敗: ${safeText(err?.message || err)}`;
+  } finally {
+    clearSecurityScansBtn.disabled = false;
+  }
+});
+
 if (deleteTestDataForm) deleteTestDataForm.addEventListener('submit', handleDeleteTestData);
 if (reloadDeleteDatesBtn) reloadDeleteDatesBtn.addEventListener('click', handleReloadDeleteDatesWithOverlay);
 
@@ -1384,7 +1617,8 @@ async function initFirstLoad() {
       loadServices((p) => setLoadingProgress(8 + p * 0.46, '正在載入服務設定...')),
       loadProbes((p) => setLoadingProgress(54 + p * 0.16, '正在載入 Probe 狀態...')),
       loadReportConfig((p) => setLoadingProgress(70 + p * 0.11, '正在載入報表設定...')),
-      loadPortScanConfig((p) => setLoadingProgress(81 + p * 0.09, '正在載入 Port 掃描設定...')),
+      loadPortScanConfig((p) => setLoadingProgress(78 + p * 0.07, '正在載入 Port 掃描設定...')),
+      loadSecurityScans((p) => setLoadingProgress(85 + p * 0.05, '正在載入安全性掃描...')),
       loadChecksDates(false, (p) => setLoadingProgress(90 + p * 0.10, '正在載入日期資料...'))
     ]);
     const failedCount = results.filter((item) => item.status === 'rejected').length;

@@ -3,6 +3,12 @@
 const summaryEl = document.getElementById('summary');
 const tbody = document.getElementById('servicesBody');
 const portScansBody = document.getElementById('portScansBody');
+const securityScansBody = document.getElementById('securityScansBody');
+const securityDetailModal = document.getElementById('securityDetailModal');
+const securityDetailModalTitle = document.getElementById('securityDetailModalTitle');
+const securityDetailModalSubtitle = document.getElementById('securityDetailModalSubtitle');
+const securityDetailModalBody = document.getElementById('securityDetailModalBody');
+const securityDetailModalClose = document.getElementById('securityDetailModalClose');
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingLabel = document.getElementById('loadingLabel');
 const loadingPercent = document.getElementById('loadingPercent');
@@ -37,6 +43,7 @@ const ALL_SERVICES_ID = '__ALL__';
 
 let services = [];
 let portScans = [];
+let securityScans = [];
 let selectedId = null;
 let latencyChart;
 let uptimeChart;
@@ -335,6 +342,166 @@ function renderPortScansTable() {
         <td data-label="Probe">${escapeHtml(probeId)}</td>
       </tr>`;
   }).join('');
+}
+
+function securityGradeBadge(grade) {
+  const g = String(grade || '-').toUpperCase();
+  const cls = g === 'A' ? 'dot-up' : g === 'B' ? 'dot-up' : g === 'C' ? 'dot-slow' : g === 'D' ? 'dot-down' : g === 'F' ? 'dot-down' : '';
+  const color = g === 'A' ? '#22c55e' : g === 'B' ? '#84cc16' : g === 'C' ? '#eab308' : g === 'D' ? '#f97316' : g === 'F' ? '#ef4444' : '#94a3b8';
+  return `<span class="status-badge" style="background:${color};color:#fff;padding:2px 10px;border-radius:4px;font-weight:700">${escapeHtml(g)}</span>`;
+}
+
+function severityBadge(severity) {
+  const s = String(severity || '').toLowerCase();
+  if (s === 'critical') return '<span style="color:#ef4444;font-weight:700">嚴重</span>';
+  if (s === 'high') return '<span style="color:#f97316;font-weight:700">高</span>';
+  if (s === 'medium') return '<span style="color:#eab308;font-weight:600">中</span>';
+  if (s === 'low') return '<span style="color:#94a3b8">低</span>';
+  if (s === 'pass') return '<span style="color:#22c55e">通過</span>';
+  if (s === 'info') return '<span style="color:#60a5fa">資訊</span>';
+  if (s === 'error') return '<span style="color:#ef4444">錯誤</span>';
+  return escapeHtml(s);
+}
+
+function renderSecurityScansTable() {
+  if (!securityScansBody) return;
+  if (!securityScans.length) {
+    securityScansBody.innerHTML = '<tr><td colspan="11">尚無安全性掃描資料。可透過 probe --security-scan 執行掃描。</td></tr>';
+    return;
+  }
+
+  securityScansBody.innerHTML = securityScans.map((scan, idx) => {
+    const name = escapeHtml(safeText(scan.service_name || scan.service_id || '-'));
+    const host = escapeHtml(safeText(scan.host || '-'));
+    const scannedAt = escapeHtml(fmtDate(scan.scanned_at));
+    const isHttps = scan.is_https ? '✓' : '✗';
+    const httpsClass = scan.is_https ? 'color:#22c55e' : 'color:#ef4444';
+    return `
+      <tr>
+        <td data-label="服務名稱">${name}</td>
+        <td data-label="Host">${host}</td>
+        <td data-label="等級">${securityGradeBadge(scan.grade)}</td>
+        <td data-label="問題數">${Number(scan.total_issues || 0)}</td>
+        <td data-label="嚴重"><span style="color:#ef4444;font-weight:700">${Number(scan.critical_count || 0)}</span></td>
+        <td data-label="高"><span style="color:#f97316">${Number(scan.high_count || 0)}</span></td>
+        <td data-label="中"><span style="color:#eab308">${Number(scan.medium_count || 0)}</span></td>
+        <td data-label="低">${Number(scan.low_count || 0)}</td>
+        <td data-label="HTTPS"><span style="${httpsClass};font-weight:600">${isHttps}</span></td>
+        <td data-label="掃描時間">${scannedAt}</td>
+        <td data-label="動作"><button class="btn tiny secondary security-detail-btn" data-idx="${idx}">詳情</button></td>
+      </tr>`;
+  }).join('');
+
+  securityScansBody.querySelectorAll('.security-detail-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const i = Number(btn.dataset.idx);
+      if (securityScans[i]) showSecurityDetailModal(securityScans[i]);
+    });
+  });
+}
+
+function showSecurityDetailModal(scan) {
+  if (!securityDetailModal || !securityDetailModalBody) return;
+  const name = safeText(scan.service_name || scan.service_id || '-');
+  if (securityDetailModalTitle) securityDetailModalTitle.textContent = `${name} 安全性掃描詳情`;
+  if (securityDetailModalSubtitle) securityDetailModalSubtitle.textContent = `掃描時間: ${fmtDate(scan.scanned_at)} | Host: ${safeText(scan.host)}`;
+
+  let details = null;
+  try { details = scan.details_json ? JSON.parse(scan.details_json) : null; } catch (_) {}
+
+  let html = `<div style="margin-bottom:16px">
+    <strong>整體等級:</strong> ${securityGradeBadge(scan.grade)}
+    <span style="margin-left:12px">問題: ${scan.total_issues} (嚴重 ${scan.critical_count} / 高 ${scan.high_count} / 中 ${scan.medium_count} / 低 ${scan.low_count})</span>
+  </div>`;
+
+  if (details && details.tls) {
+    const tls = details.tls;
+    html += `<h3 style="margin:12px 0 6px;font-size:14px">SSL/TLS 憑證</h3>
+    <table class="security-detail-table" style="width:100%;font-size:13px;border-collapse:collapse">
+      <tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">協定</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">${escapeHtml(tls.protocol || '-')}</td></tr>
+      <tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">加密套件</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">${escapeHtml(tls.cipher || '-')}</td></tr>
+      <tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">憑證主體</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">${escapeHtml(tls.cert_subject || '-')}</td></tr>
+      <tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">簽發者</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">${escapeHtml(tls.cert_issuer || '-')}</td></tr>
+      <tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">有效期</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">${escapeHtml(tls.cert_valid_from || '-')} ~ ${escapeHtml(tls.cert_valid_to || '-')}</td></tr>
+      <tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">剩餘天數</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">${tls.cert_days_remaining >= 0 ? tls.cert_days_remaining + ' 天' : '已過期'} ${tls.cert_expired ? '<span style="color:#ef4444;font-weight:700">已過期</span>' : ''}</td></tr>
+      <tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">自簽憑證</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">${tls.cert_self_signed ? '<span style="color:#f97316">是</span>' : '否'}</td></tr>
+      <tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">SNI 匹配</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">${tls.sni_match ? '✓' : '<span style="color:#ef4444">✗ 不匹配</span>'}</td></tr>
+      <tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">嚴重程度</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">${severityBadge(tls.severity)}</td></tr>
+      ${tls.errors && tls.errors.length ? `<tr><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08)">錯誤</td><td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.08);color:#ef4444">${tls.errors.map(e => escapeHtml(e)).join('<br>')}</td></tr>` : ''}
+    </table>`;
+  } else if (scan.is_https) {
+    html += `<p style="color:#ef4444;margin:8px 0">無法取得 TLS 憑證資訊</p>`;
+  } else {
+    html += `<p style="color:#eab308;margin:8px 0">此服務未使用 HTTPS</p>`;
+  }
+
+  if (details && details.headers && details.headers.length) {
+    html += `<h3 style="margin:16px 0 6px;font-size:14px">HTTP 安全標頭檢查</h3>
+    <table style="width:100%;font-size:13px;border-collapse:collapse">
+      <thead><tr>
+        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.15)">項目</th>
+        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.15)">狀態</th>
+        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.15)">嚴重程度</th>
+        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.15)">說明</th>
+      </tr></thead>
+      <tbody>
+      ${details.headers.map(h => `<tr>
+        <td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.06)">${escapeHtml(h.check || '')}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.06)">${h.present ? '<span style="color:#22c55e">✓</span>' : '<span style="color:#ef4444">✗</span>'}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.06)">${severityBadge(h.severity)}</td>
+        <td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.06);font-size:12px">${escapeHtml(h.description || '')}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  if (details && details.paths && details.paths.length) {
+    const accessiblePaths = details.paths.filter(p => p.accessible);
+    const protectedPaths = details.paths.filter(p => !p.accessible);
+    html += `<h3 style="margin:16px 0 6px;font-size:14px">敏感路徑偵測</h3>`;
+    if (accessiblePaths.length) {
+      html += `<table style="width:100%;font-size:13px;border-collapse:collapse;margin-bottom:8px">
+        <thead><tr>
+          <th style="text-align:left;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.15)">路徑</th>
+          <th style="text-align:left;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.15)">說明</th>
+          <th style="text-align:left;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.15)">HTTP</th>
+          <th style="text-align:left;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.15)">嚴重程度</th>
+        </tr></thead>
+        <tbody>
+        ${accessiblePaths.map(p => `<tr>
+          <td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.06);color:#ef4444">${escapeHtml(p.path)}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.06)">${escapeHtml(p.description || '')}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.06)">${p.status_code}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.06)">${severityBadge(p.severity)}</td>
+        </tr>`).join('')}
+        </tbody>
+      </table>`;
+    }
+    html += `<details style="font-size:13px"><summary style="cursor:pointer;color:#94a3b8">已保護路徑 (${protectedPaths.length})</summary>
+      <ul style="margin:4px 0;padding-left:20px">
+      ${protectedPaths.map(p => `<li style="color:#22c55e">${escapeHtml(p.path)} - ${escapeHtml(p.label)}</li>`).join('')}
+      </ul>
+    </details>`;
+  }
+
+  securityDetailModalBody.innerHTML = html;
+  securityDetailModal.classList.remove('hidden');
+  securityDetailModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeSecurityDetailModal() {
+  if (!securityDetailModal) return;
+  securityDetailModal.classList.add('hidden');
+  securityDetailModal.setAttribute('aria-hidden', 'true');
+}
+
+if (securityDetailModalClose) {
+  securityDetailModalClose.addEventListener('click', closeSecurityDetailModal);
+}
+if (securityDetailModal) {
+  securityDetailModal.addEventListener('click', (e) => {
+    if (e.target === securityDetailModal) closeSecurityDetailModal();
+  });
 }
 
 function getServiceRangeText(rows) {
@@ -1005,12 +1172,14 @@ async function loadServices() {
   if (firstPaintLoad) setLoadingProgress(5, '讀取服務清單...');
 
   try {
-    const [servicesResult, portScansResult] = await Promise.all([
+    const [servicesResult, portScansResult, securityScansResult] = await Promise.all([
       apiGet({ action: 'listServices' }),
-      apiGet({ action: 'listPortScans' }).catch(() => ({ ok: false, data: [] }))
+      apiGet({ action: 'listPortScans' }).catch(() => ({ ok: false, data: [] })),
+      apiGet({ action: 'listSecurityScans' }).catch(() => ({ ok: false, data: [] }))
     ]);
     services = servicesResult.data || [];
     portScans = portScansResult && portScansResult.ok ? (portScansResult.data || []) : [];
+    securityScans = securityScansResult && securityScansResult.ok ? (securityScansResult.data || []) : [];
     if (firstPaintLoad) setLoadingProgress(25, '整理服務資料...');
 
     if (!selectedId) {
@@ -1023,6 +1192,7 @@ async function loadServices() {
     renderSummary();
     renderTable();
     renderPortScansTable();
+    renderSecurityScansTable();
     let dateRangeProgress = 0;
 
     if (firstPaintLoad) {
