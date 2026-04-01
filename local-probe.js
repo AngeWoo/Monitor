@@ -1,12 +1,13 @@
 const fs = require("fs");
 const http = require("http");
 const https = require("https");
+const tls = require("tls");
 const net = require("net");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const PROBE_SCRIPT_VERSION = "20260315-a002";
+const PROBE_SCRIPT_VERSION = "20260331-a007";
 const DEFAULT_API_BASE = "https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec";
 const DEFAULT_API_REDIRECTS = 5;
 const DEFAULT_CONTROL_INTERVAL_SEC = 60;
@@ -21,9 +22,11 @@ function parseCliArgs(argv) {
     controlMode: false,
     runOnceMode: false,
     claimPortScanMode: false,
+    claimSecurityScanMode: false,
     noResultWindow: false,
     serviceId: "",
     portScanMode: false,
+    securityScanMode: false,
     scanHost: "",
     scanPorts: "",
     deviceName: ""
@@ -50,6 +53,14 @@ function parseCliArgs(argv) {
     }
     if (arg === "--port-scan") {
       parsed.portScanMode = true;
+      continue;
+    }
+    if (arg === "--security-scan") {
+      parsed.securityScanMode = true;
+      continue;
+    }
+    if (arg === "--claim-security-scan-request") {
+      parsed.claimSecurityScanMode = true;
       continue;
     }
     if (arg === "--config" && argv[i + 1]) {
@@ -407,6 +418,544 @@ function scanTcpPort(host, port, timeoutMs) {
     }
   });
 }
+
+async function claimSecurityScanSignal() {
+  const response = await apiPost({
+    action: "claimSecurityScanSignal",
+    probe_id: RUNTIME.probeId,
+    probe_name: RUNTIME.probeName
+  });
+  if (!response || !response.ok) {
+    throw new Error(response && response.error ? response.error : "claimSecurityScanSignal failed");
+  }
+  return response.data || null;
+}
+
+async function appendSecurityScanSignalLog(requestId, message, level = "info") {
+  if (!requestId || !message) return;
+  await apiPost({
+    action: "appendSecurityScanSignalLog",
+    request_id: requestId,
+    probe_id: RUNTIME.probeId,
+    level,
+    message
+  }).catch(() => {});
+}
+
+async function completeSecurityScanSignal(requestId, payload) {
+  if (!requestId) return;
+  const response = await apiPost({
+    action: "completeSecurityScanSignal",
+    request_id: requestId,
+    probe_id: RUNTIME.probeId,
+    ...payload
+  });
+  if (!response || !response.ok) {
+    throw new Error(response && response.error ? response.error : "completeSecurityScanSignal failed");
+  }
+  return response.data || null;
+}
+
+// ─── Security Scan ───────────────────────────────────────────────────────────
+
+const SECURITY_HEADERS_CHECKLIST = [
+  { header: "strict-transport-security", label: "HSTS", severity: "high", description: "HTTP Strict Transport Security 未設定，瀏覽器可能透過 HTTP 明文連線" },
+  { header: "x-frame-options", label: "X-Frame-Options", severity: "medium", description: "未設定 X-Frame-Options，可能受到 Clickjacking 攻擊" },
+  { header: "x-content-type-options", label: "X-Content-Type-Options", severity: "medium", description: "未設定 nosniff，瀏覽器可能錯誤解析 MIME 類型" },
+  { header: "content-security-policy", label: "CSP", severity: "medium", description: "未設定 Content-Security-Policy，可能受到 XSS 攻擊" },
+  { header: "x-xss-protection", label: "X-XSS-Protection", severity: "low", description: "未設定 X-XSS-Protection（舊版瀏覽器 XSS 防護）" },
+  { header: "referrer-policy", label: "Referrer-Policy", severity: "low", description: "未設定 Referrer-Policy，可能洩漏敏感 URL 資訊" },
+  { header: "permissions-policy", label: "Permissions-Policy", severity: "low", description: "未設定 Permissions-Policy，未限制瀏覽器功能存取權限" }
+];
+
+const SENSITIVE_PATHS = [
+  { path: "/.env", label: ".env 環境變數檔", severity: "critical" },
+  { path: "/.git/config", label: "Git 配置檔", severity: "critical" },
+  { path: "/wp-admin/", label: "WordPress 後台", severity: "high" },
+  { path: "/phpmyadmin/", label: "phpMyAdmin", severity: "high" },
+  { path: "/admin/", label: "管理後台", severity: "medium" },
+  { path: "/server-status", label: "Apache Server Status", severity: "medium" },
+  { path: "/server-info", label: "Apache Server Info", severity: "medium" },
+  { path: "/.htaccess", label: ".htaccess 配置檔", severity: "medium" },
+  { path: "/web.config", label: "IIS web.config", severity: "medium" },
+  { path: "/robots.txt", label: "robots.txt", severity: "info" },
+  { path: "/.well-known/security.txt", label: "security.txt", severity: "info" }
+];
+
+const WEAK_TLS_PROTOCOLS = ["TLSv1", "TLSv1.1"];
+
+function checkTlsCertificate(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const result = {
+      ok: false,
+      protocol: "",
+      cipher: "",
+      cert_subject: "",
+      cert_issuer: "",
+      cert_valid_from: "",
+      cert_valid_to: "",
+      cert_days_remaining: -1,
+      cert_expired: false,
+      cert_self_signed: false,
+      sni_match: true,
+      errors: []
+    };
+
+    const socket = tls.connect({
+      host,
+      port: port || 443,
+      servername: host,
+      rejectUnauthorized: false,
+      timeout: timeoutMs || 10000
+    }, () => {
+      try {
+        result.ok = true;
+        result.protocol = socket.getProtocol ? socket.getProtocol() : "";
+        const cipher = socket.getCipher ? socket.getCipher() : {};
+        result.cipher = cipher.name || "";
+
+        const cert = socket.getPeerCertificate ? socket.getPeerCertificate() : {};
+        if (cert && cert.subject) {
+          result.cert_subject = cert.subject.CN || "";
+          result.cert_issuer = (cert.issuer && cert.issuer.CN) || "";
+          result.cert_valid_from = cert.valid_from || "";
+          result.cert_valid_to = cert.valid_to || "";
+
+          if (cert.valid_to) {
+            const expiry = new Date(cert.valid_to);
+            const now = new Date();
+            const daysRemaining = Math.floor((expiry - now) / (1000 * 60 * 60 * 24));
+            result.cert_days_remaining = daysRemaining;
+            result.cert_expired = daysRemaining < 0;
+          }
+
+          if (cert.issuer && cert.subject &&
+              cert.issuer.CN === cert.subject.CN &&
+              cert.issuer.O === cert.subject.O) {
+            result.cert_self_signed = true;
+          }
+
+          if (!socket.authorized) {
+            const authError = socket.authorizationError || "";
+            result.errors.push(authError);
+            if (/hostname|mismatch/i.test(authError)) {
+              result.sni_match = false;
+            }
+          }
+        }
+      } catch (e) {
+        result.errors.push(String(e.message || e));
+      }
+      socket.destroy();
+      resolve(result);
+    });
+
+    socket.on("error", (err) => {
+      result.errors.push(String(err.message || err));
+      socket.destroy();
+      resolve(result);
+    });
+
+    socket.setTimeout(timeoutMs || 10000, () => {
+      result.errors.push("TLS handshake timeout");
+      socket.destroy();
+      resolve(result);
+    });
+  });
+}
+
+async function checkSecurityHeaders(url, timeoutMs) {
+  const findings = [];
+  try {
+    const response = await requestText(url, {
+      method: "GET",
+      headers: { "User-Agent": RUNTIME.userAgent }
+    });
+    const headers = response.headers || {};
+
+    for (const check of SECURITY_HEADERS_CHECKLIST) {
+      const value = String(headers[check.header] || "").trim();
+      findings.push({
+        check: check.label,
+        header: check.header,
+        present: !!value,
+        value: value || "",
+        severity: value ? "pass" : check.severity,
+        description: value ? `已設定: ${value}` : check.description
+      });
+    }
+
+    const serverHeader = String(headers["server"] || "").trim();
+    if (serverHeader) {
+      const hasVersion = /\/[\d.]+/.test(serverHeader);
+      findings.push({
+        check: "Server Header",
+        header: "server",
+        present: true,
+        value: serverHeader,
+        severity: hasVersion ? "medium" : "info",
+        description: hasVersion
+          ? `Server header 暴露版本資訊: ${serverHeader}`
+          : `Server header: ${serverHeader}`
+      });
+    }
+
+    const poweredBy = String(headers["x-powered-by"] || "").trim();
+    if (poweredBy) {
+      findings.push({
+        check: "X-Powered-By",
+        header: "x-powered-by",
+        present: true,
+        value: poweredBy,
+        severity: "medium",
+        description: `X-Powered-By 暴露技術棧: ${poweredBy}，建議移除`
+      });
+    }
+  } catch (error) {
+    findings.push({
+      check: "HTTP_REQUEST",
+      header: "",
+      present: false,
+      value: "",
+      severity: "error",
+      description: `無法連線檢查: ${error.message || error}`
+    });
+  }
+  return findings;
+}
+
+async function checkSensitivePaths(baseUrl, timeoutMs) {
+  const base = baseUrl.replace(/\/+$/, "");
+  return Promise.all(SENSITIVE_PATHS.map(async (item) => {
+    const targetUrl = base + item.path;
+    try {
+      const response = await requestText(targetUrl, {
+        method: "GET",
+        headers: { "User-Agent": RUNTIME.userAgent }
+      });
+      const code = Number(response.statusCode || 0);
+      const bodyLen = String(response.bodyText || "").length;
+      const accessible = code >= 200 && code < 400 && bodyLen > 0;
+      if (accessible) {
+        return {
+          path: item.path, label: item.label, status_code: code,
+          accessible: true, severity: item.severity, body_length: bodyLen,
+          description: `${item.label} 可公開存取 (HTTP ${code})，建議限制存取`
+        };
+      } else {
+        return {
+          path: item.path, label: item.label, status_code: code,
+          accessible: false, severity: "pass", body_length: 0,
+          description: `${item.label} 已保護 (HTTP ${code})`
+        };
+      }
+    } catch (error) {
+      return {
+        path: item.path, label: item.label, status_code: 0,
+        accessible: false, severity: "pass", body_length: 0,
+        description: `${item.label} 無法存取: ${error.message || error}`
+      };
+    }
+  }));
+}
+
+// Run up to `limit` async tasks concurrently, preserving result order
+async function runLimited(tasks, limit) {
+  const results = new Array(tasks.length);
+  let next = 0;
+  async function worker() {
+    while (next < tasks.length) {
+      const idx = next++;
+      results[idx] = await tasks[idx]();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return results;
+}
+
+async function runSecurityScanForService(service, logFn) {
+  const log = typeof logFn === "function" ? logFn : async (msg) => console.log(msg);
+  const url = String(service.url || "").trim();
+  const secondaryUrl = String(service.secondary_url || "").trim();
+  const targetUrl = secondaryUrl || url;
+  if (!targetUrl) {
+    return { ok: false, service_id: service.id, service_name: service.name, error: "No URL" };
+  }
+
+  const scannedAt = new Date().toISOString();
+  let parsedUrl;
+  try { parsedUrl = new URL(targetUrl); } catch (_) {
+    return { ok: false, service_id: service.id, service_name: service.name, error: "Invalid URL" };
+  }
+
+  const isHttps = parsedUrl.protocol === "https:";
+  const host = parsedUrl.hostname;
+  const port = parsedUrl.port || (isHttps ? 443 : 80);
+
+  await log(`[SECURITY_SCAN] service=${service.name || service.id} url=${targetUrl}`);
+
+  // TLS + headers + paths 並行執行
+  const [tlsResult, headerFindings, pathFindings] = await Promise.all([
+    isHttps
+      ? checkTlsCertificate(host, Number(port), RUNTIME.requestTimeoutMs)
+      : Promise.resolve(null),
+    checkSecurityHeaders(targetUrl, RUNTIME.requestTimeoutMs),
+    checkSensitivePaths(targetUrl, RUNTIME.requestTimeoutMs)
+  ]);
+
+  // Compute summary score
+  const allFindings = [...headerFindings, ...pathFindings];
+  const criticalCount = allFindings.filter((f) => f.severity === "critical").length;
+  const highCount = allFindings.filter((f) => f.severity === "high").length;
+  const mediumCount = allFindings.filter((f) => f.severity === "medium").length;
+  const lowCount = allFindings.filter((f) => f.severity === "low").length;
+  const passCount = allFindings.filter((f) => f.severity === "pass").length;
+
+  let tlsSeverity = "pass";
+  if (tlsResult) {
+    if (tlsResult.cert_expired) tlsSeverity = "critical";
+    else if (tlsResult.cert_self_signed) tlsSeverity = "high";
+    else if (tlsResult.cert_days_remaining >= 0 && tlsResult.cert_days_remaining <= 30) tlsSeverity = "high";
+    else if (tlsResult.cert_days_remaining > 30 && tlsResult.cert_days_remaining <= 90) tlsSeverity = "medium";
+    else if (!tlsResult.sni_match) tlsSeverity = "high";
+    else if (WEAK_TLS_PROTOCOLS.includes(tlsResult.protocol)) tlsSeverity = "high";
+  } else if (isHttps) {
+    tlsSeverity = "error";
+  }
+
+  const totalIssues = criticalCount + highCount + mediumCount + lowCount + (tlsSeverity !== "pass" && tlsSeverity !== "error" ? 1 : 0);
+  let grade = "A";
+  if (criticalCount > 0) grade = "F";
+  else if (highCount > 0 || tlsSeverity === "critical" || tlsSeverity === "high") grade = "D";
+  else if (mediumCount > 2) grade = "C";
+  else if (mediumCount > 0) grade = "B";
+  else if (lowCount > 2) grade = "B";
+
+  const result = {
+    ok: true,
+    service_id: String(service.id || "").trim(),
+    service_name: String(service.name || service.url || "").trim(),
+    url: targetUrl,
+    host,
+    scanned_at: scannedAt,
+    grade,
+    total_issues: totalIssues,
+    critical_count: criticalCount,
+    high_count: highCount,
+    medium_count: mediumCount,
+    low_count: lowCount,
+    pass_count: passCount,
+    is_https: isHttps,
+    tls: tlsResult ? {
+      protocol: tlsResult.protocol,
+      cipher: tlsResult.cipher,
+      cert_subject: tlsResult.cert_subject,
+      cert_issuer: tlsResult.cert_issuer,
+      cert_valid_from: tlsResult.cert_valid_from,
+      cert_valid_to: tlsResult.cert_valid_to,
+      cert_days_remaining: tlsResult.cert_days_remaining,
+      cert_expired: tlsResult.cert_expired,
+      cert_self_signed: tlsResult.cert_self_signed,
+      sni_match: tlsResult.sni_match,
+      severity: tlsSeverity,
+      errors: tlsResult.errors || []
+    } : null,
+    headers: headerFindings,
+    paths: pathFindings
+  };
+
+  await log(`[SECURITY_SCAN] service=${service.name || service.id} grade=${grade} issues=${totalIssues} (critical=${criticalCount} high=${highCount} medium=${mediumCount} low=${lowCount})`);
+  return result;
+}
+
+async function runClaimedSecurityScanSession(session) {
+  const requestId = String(session && session.request_id || "").trim();
+  if (!requestId) throw new Error("Missing request_id");
+
+  // Serialize GAS log writes to avoid concurrent lock contention during parallel service scans
+  let gasLogQueue = Promise.resolve();
+  const enqueueGasLog = (text, level) => {
+    gasLogQueue = gasLogQueue.then(
+      () => appendSecurityScanSignalLog(requestId, text, level).catch(() => {}),
+      () => appendSecurityScanSignalLog(requestId, text, level).catch(() => {})
+    );
+  };
+  const flushLogs = () => gasLogQueue;
+
+  // log() is non-blocking: console.log is immediate, GAS write is queued sequentially
+  const log = (message, level = "info") => {
+    const text = String(message || "").trim();
+    if (!text) return Promise.resolve();
+    console.log(text);
+    enqueueGasLog(text, level);
+    return Promise.resolve();
+  };
+
+  enqueueGasLog(`[SECURITY_SCAN_REQUEST] request=${requestId} claimed by ${RUNTIME.probeId}`, "info");
+
+  try {
+    await runSecurityScanOnce({ requestId, onLog: log });
+    await flushLogs();
+    const summary = `[SECURITY_SCAN_REQUEST] request=${requestId} completed by ${RUNTIME.probeId}`;
+    await appendSecurityScanSignalLog(requestId, summary, "info");
+    await completeSecurityScanSignal(requestId, { status: "completed", result_summary: summary });
+    return { ok: true, requestId };
+  } catch (error) {
+    await flushLogs().catch(() => {});
+    const message = String(error && error.message ? error.message : error);
+    const summary = `[SECURITY_SCAN_REQUEST] request=${requestId} failed: ${message}`;
+    await appendSecurityScanSignalLog(requestId, summary, "error");
+    await completeSecurityScanSignal(requestId, { status: "failed", error: message, result_summary: summary });
+    throw error;
+  }
+}
+
+async function claimAndRunRequestedSecurityScan(options = {}) {
+  const session = await claimSecurityScanSignal();
+  if (!session) {
+    if (!options.silentNoop) {
+      console.log("[SECURITY_SCAN_REQUEST] no pending request");
+    }
+    return null;
+  }
+  return runClaimedSecurityScanSession(session);
+}
+
+async function runSecurityScanOnce(options = {}) {
+  const requestId = String(options && options.requestId || "").trim();
+  const onLog = typeof options.onLog === "function" ? options.onLog : null;
+  const log = async (message, level = "info") => {
+    console.log(message);
+    if (onLog) await onLog(message, level);
+  };
+
+  const startedAt = new Date().toISOString();
+  await upsertProbe({ last_run_started_at: startedAt, last_run_status: "RUNNING" });
+
+  const listResponse = await apiGet({ action: "listServices" });
+  if (!listResponse.ok) {
+    throw new Error(listResponse.error || "listServices failed");
+  }
+
+  const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+  function isLocalHost(urlStr) {
+    try {
+      const h = new URL(String(urlStr || "").trim()).hostname.toLowerCase();
+      return LOCAL_HOSTNAMES.has(h);
+    } catch (_) { return false; }
+  }
+
+  let services = (listResponse.data || []).filter((item) => {
+    if (!toBool(item.enabled)) return false;
+    const targetUrl = String(item.secondary_url || item.url || "").trim();
+    if (isLocalHost(targetUrl)) {
+      console.log(`[SECURITY_SCAN] skip local host: ${targetUrl} (${item.name || item.id})`);
+      return false;
+    }
+    return true;
+  });
+  if (RUNTIME.forceServiceId) {
+    const matched = services.find((item) => String(item.id || "").trim() === RUNTIME.forceServiceId);
+    if (!matched) throw new Error(`Service not found: ${RUNTIME.forceServiceId}`);
+    services = [matched];
+  }
+
+  if (RUNTIME.cli.scanHost) {
+    services = services.filter((item) => {
+      try {
+        const u = new URL(String(item.secondary_url || item.url || "").trim());
+        return u.hostname === RUNTIME.cli.scanHost;
+      } catch (_) { return false; }
+    });
+    if (!services.length) {
+      services = [{
+        id: "manual",
+        name: RUNTIME.cli.scanHost,
+        url: `${RUNTIME.cli.scanHost.startsWith("http") ? "" : "https://"}${RUNTIME.cli.scanHost}`,
+        enabled: true
+      }];
+    }
+  }
+
+  const SCAN_CONCURRENCY = 5;
+  await log(`[SECURITY_SCAN] starting scan for ${services.length} service(s), concurrency=${SCAN_CONCURRENCY}`);
+  const writeErrors = [];
+
+  const scanTasks = services.map((service) => async () => {
+    const result = await runSecurityScanForService(service, log);
+    if (result.ok) {
+      try {
+        const writeResponse = await apiPost({
+          action: "updateSecurityScan",
+          probe_id: RUNTIME.probeId,
+          service_id: result.service_id,
+          service_name: result.service_name,
+          url: result.url,
+          host: result.host,
+          scanned_at: result.scanned_at,
+          grade: result.grade,
+          total_issues: result.total_issues,
+          critical_count: result.critical_count,
+          high_count: result.high_count,
+          medium_count: result.medium_count,
+          low_count: result.low_count,
+          pass_count: result.pass_count,
+          is_https: result.is_https,
+          details_json: JSON.stringify({
+            tls: result.tls,
+            headers: result.headers,
+            paths: result.paths
+          })
+        });
+        if (!writeResponse.ok) {
+          writeErrors.push(`${service.name || service.id}: ${writeResponse.error || "updateSecurityScan failed"}`);
+        }
+      } catch (error) {
+        writeErrors.push(`${service.name || service.id}: ${error.message || error}`);
+      }
+    }
+    return result;
+  });
+  const results = await runLimited(scanTasks, SCAN_CONCURRENCY);
+
+  const finishedAt = new Date().toISOString();
+  const runStatus = writeErrors.length ? "PARTIAL_ERROR" : "OK";
+
+  await upsertProbe({
+    last_run_started_at: startedAt,
+    last_run_finished_at: finishedAt,
+    last_run_status: runStatus,
+    last_run_error: writeErrors.length ? writeErrors.slice(0, 6).join(" | ") : ""
+  });
+
+  const summaryPayload = {
+    ok: true,
+    mode: "security_scan",
+    probe_id: RUNTIME.probeId,
+    probe_name: RUNTIME.probeName,
+    service_count: results.length,
+    results,
+    write_errors: writeErrors
+  };
+  await log(JSON.stringify(summaryPayload, null, 2));
+
+  maybeShowRunSummaryWindow({
+    probeId: RUNTIME.probeId,
+    probeName: RUNTIME.probeName,
+    startedAt,
+    finishedAt,
+    runStatus,
+    errorMessage: writeErrors.join(" | "),
+    results: results.map((r) => ({
+      service: r.service_name || r.service_id,
+      status: r.ok ? (r.grade === "F" || r.grade === "D" ? "WARN" : "OK") : "ERROR",
+      httpCode: 0,
+      error: r.ok ? `Grade ${r.grade} | Issues: ${r.total_issues}` : (r.error || "")
+    }))
+  });
+}
+
+// ─── End Security Scan ───────────────────────────────────────────────────────
 
 async function runPortScanOnce() {
   const host = String(RUNTIME.cli.scanHost || "").trim();
@@ -1116,16 +1665,28 @@ function buildControlWindowCommand(controlDefaults) {
   const portScanArgs = process.pkg
     ? ["--port-scan", "--no-result-window"]
     : [path.resolve(__filename), "--port-scan", "--no-result-window"];
+  const securityScanArgs = process.pkg
+    ? ["--security-scan", "--no-result-window"]
+    : [path.resolve(__filename), "--security-scan", "--no-result-window"];
+  const claimSecurityScanArgs = process.pkg
+    ? ["--claim-security-scan-request", "--no-result-window"]
+    : [path.resolve(__filename), "--claim-security-scan-request", "--no-result-window"];
 
   if (RUNTIME.configPath && fs.existsSync(RUNTIME.configPath)) {
     runOnceArgs.push("--config", RUNTIME.configPath);
     claimPortScanArgs.push("--config", RUNTIME.configPath);
     portScanArgs.push("--config", RUNTIME.configPath);
+    securityScanArgs.push("--config", RUNTIME.configPath);
+    claimSecurityScanArgs.push("--config", RUNTIME.configPath);
   }
 
   const launchArgs = runOnceArgs.map((item) => `"${String(item).replace(/"/g, '\\"')}"`).join(" ");
   const claimPortScanLaunchArgs = claimPortScanArgs.map((item) => `"${String(item).replace(/"/g, '\\"')}"`).join(" ");
   const portScanLaunchArgs = portScanArgs.map((item) => `"${String(item).replace(/"/g, '\\"')}"`).join(" ");
+  const securityScanLaunchArgs = securityScanArgs.map((item) => `"${String(item).replace(/"/g, '\\"')}"`).join(" ");
+  const claimSecurityScanLaunchArgs = claimSecurityScanArgs.map((item) => `"${String(item).replace(/"/g, '\\"')}"`).join(" ");
+  const autoPortScanArgs = [...portScanArgs, "--device-name", defaultDeviceName, "--scan-host", defaultScanHost, "--scan-ports", defaultScanPorts];
+  const autoPortScanLaunchArgs = autoPortScanArgs.map((item) => `"${String(item).replace(/"/g, '\\"')}"`).join(" ");
   const title = `${RUNTIME.probeName} Control`;
   const intervalMs = Math.max(10000, RUNTIME.controlWindowIntervalSec * 1000);
   const defaults = controlDefaults || {};
@@ -1169,51 +1730,15 @@ $btnClose = New-Object System.Windows.Forms.Button
 $btnClose.Text = 'Close'
 $btnClose.Width = 100
 $btnClose.Height = 32
-$scanPanel = New-Object System.Windows.Forms.Panel
-$scanPanel.Dock = 'Top'
-$scanPanel.Height = 106
-$scanPanel.Padding = New-Object System.Windows.Forms.Padding(10, 6, 10, 6)
-$scanTitle = New-Object System.Windows.Forms.Label
-$scanTitle.Text = 'Port Scan'
-$scanTitle.Location = New-Object System.Drawing.Point(4, 4)
-$scanTitle.AutoSize = $true
-$scanHint = New-Object System.Windows.Forms.Label
-$scanHint.Text = 'Device 預設所有測試項，Host=AUTO 代表依各服務網址自動判斷。'
-$scanHint.Location = New-Object System.Drawing.Point(84, 5)
-$scanHint.AutoSize = $true
-$deviceLabel = New-Object System.Windows.Forms.Label
-$deviceLabel.Text = 'Device'
-$deviceLabel.Location = New-Object System.Drawing.Point(4, 34)
-$deviceLabel.AutoSize = $true
-$txtDevice = New-Object System.Windows.Forms.TextBox
-$txtDevice.Location = New-Object System.Drawing.Point(64, 30)
-$txtDevice.Size = New-Object System.Drawing.Size(180, 24)
-$txtDevice.Text = '${escapePowerShellSingleQuoted(defaultDeviceName)}'
-$hostLabel = New-Object System.Windows.Forms.Label
-$hostLabel.Text = 'Host'
-$hostLabel.Location = New-Object System.Drawing.Point(258, 34)
-$hostLabel.AutoSize = $true
-$txtHost = New-Object System.Windows.Forms.TextBox
-$txtHost.Location = New-Object System.Drawing.Point(304, 30)
-$txtHost.Size = New-Object System.Drawing.Size(180, 24)
-$txtHost.Text = '${escapePowerShellSingleQuoted(defaultScanHost)}'
-$portsLabel = New-Object System.Windows.Forms.Label
-$portsLabel.Text = 'Ports'
-$portsLabel.Location = New-Object System.Drawing.Point(498, 34)
-$portsLabel.AutoSize = $true
-$txtPorts = New-Object System.Windows.Forms.TextBox
-$txtPorts.Location = New-Object System.Drawing.Point(542, 30)
-$txtPorts.Size = New-Object System.Drawing.Size(180, 24)
-$txtPorts.Text = '${escapePowerShellSingleQuoted(defaultScanPorts)}'
-$scanNote = New-Object System.Windows.Forms.Label
-$scanNote.Text = 'Use comma-separated ports or ranges, e.g. 80,443,8080-8082'
-$scanNote.Location = New-Object System.Drawing.Point(4, 66)
-$scanNote.AutoSize = $true
-$btnPortScan = New-Object System.Windows.Forms.Button
-$btnPortScan.Text = 'Scan Ports'
-$btnPortScan.Location = New-Object System.Drawing.Point(622, 62)
-$btnPortScan.Size = New-Object System.Drawing.Size(100, 30)
-$btnPortScan.Enabled = $true
+$infoPanel = New-Object System.Windows.Forms.Panel
+$infoPanel.Dock = 'Top'
+$infoPanel.Height = 32
+$infoPanel.Padding = New-Object System.Windows.Forms.Padding(10, 6, 10, 4)
+$infoLabel = New-Object System.Windows.Forms.Label
+$infoLabel.Text = '安全性掃描 / Port 掃描請由管理頁面觸發。'
+$infoLabel.Location = New-Object System.Drawing.Point(4, 4)
+$infoLabel.AutoSize = $true
+$infoPanel.Controls.Add($infoLabel)
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Multiline = $true
 $logBox.ReadOnly = $true
@@ -1225,18 +1750,8 @@ $buttonPanel.Controls.Add($btnRunOnce)
 $buttonPanel.Controls.Add($btnStart)
 $buttonPanel.Controls.Add($btnStop)
 $buttonPanel.Controls.Add($btnClose)
-$scanPanel.Controls.Add($scanTitle)
-$scanPanel.Controls.Add($scanHint)
-$scanPanel.Controls.Add($deviceLabel)
-$scanPanel.Controls.Add($txtDevice)
-$scanPanel.Controls.Add($hostLabel)
-$scanPanel.Controls.Add($txtHost)
-$scanPanel.Controls.Add($portsLabel)
-$scanPanel.Controls.Add($txtPorts)
-$scanPanel.Controls.Add($scanNote)
-$scanPanel.Controls.Add($btnPortScan)
 $form.Controls.Add($logBox)
-$form.Controls.Add($scanPanel)
+$form.Controls.Add($infoPanel)
 $form.Controls.Add($buttonPanel)
 $form.Controls.Add($statusLabel)
 $intervalTimer = New-Object System.Windows.Forms.Timer
@@ -1250,6 +1765,7 @@ $script:isProbeRunning = $false
 $script:isPortScanRunning = $false
 $script:isProbeOnline = $false
 $script:probeProcess = $null
+$script:autoScanProcess = $null
 $script:scanProcess = $null
 $script:scanProcessMode = ''
 function Append-Log([string]$text) {
@@ -1261,10 +1777,12 @@ function Quote-Arg([string]$value) {
   return '"' + ($value -replace '"', '\\"') + '"'
 }
 function Update-PortScanState() {
-  $btnPortScan.Enabled = -not $script:isProbeRunning -and -not $script:isPortScanRunning
+  # Scan buttons removed; scans are auto-started or admin-triggered
 }
 function Update-Status() {
-  if ($script:isPortScanRunning) {
+  if ($script:isPortScanRunning -and ($script:scanProcessMode -eq 'security' -or $script:scanProcessMode -eq 'remote-security')) {
+    $statusLabel.Text = 'Status: security scan running'
+  } elseif ($script:isPortScanRunning) {
     $statusLabel.Text = 'Status: port scan running'
   } elseif ($script:isProbeRunning -and $script:isLoopRunning) {
     $statusLabel.Text = 'Status: running (loop enabled)'
@@ -1399,6 +1917,73 @@ function Start-RequestedPortScan() {
   Update-Status
   $pollTimer.Start()
 }
+function Start-RequestedSecurityScan() {
+  if ($script:isProbeRunning -or $script:isPortScanRunning) {
+    return
+  }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = '${String(childFile).replace(/'/g, "''")}'
+  $psi.Arguments = '${claimSecurityScanLaunchArgs.replace(/'/g, "''")}'
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+  $script:scanProcess = New-Object System.Diagnostics.Process
+  $script:scanProcess.StartInfo = $psi
+  $script:scanProcess.add_OutputDataReceived({
+    param($sender, $args)
+    if ($args.Data) { $form.BeginInvoke([Action[string]]{ param($line) Append-Log($line) }, $args.Data) | Out-Null }
+  })
+  $script:scanProcess.add_ErrorDataReceived({
+    param($sender, $args)
+    if ($args.Data) { $form.BeginInvoke([Action[string]]{ param($line) Append-Log($line) }, $args.Data) | Out-Null }
+  })
+  [void]$script:scanProcess.Start()
+  $script:scanProcess.BeginOutputReadLine()
+  $script:scanProcess.BeginErrorReadLine()
+  $script:isPortScanRunning = $true
+  $script:scanProcessMode = 'remote-security'
+  Update-Status
+  $pollTimer.Start()
+}
+function Start-SecurityScan() {
+  if ($script:isProbeRunning -or $script:isPortScanRunning) {
+    Append-Log('Another probe task is already in progress.')
+    return
+  }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = '${String(childFile).replace(/'/g, "''")}'
+  $psi.Arguments = '${securityScanLaunchArgs.replace(/'/g, "''")}'
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+  $script:scanProcess = New-Object System.Diagnostics.Process
+  $script:scanProcess.StartInfo = $psi
+  $script:scanProcess.add_OutputDataReceived({
+    param($sender, $args)
+    if ($args.Data) { $form.BeginInvoke([Action[string]]{ param($line) Append-Log($line) }, $args.Data) | Out-Null }
+  })
+  $script:scanProcess.add_ErrorDataReceived({
+    param($sender, $args)
+    if ($args.Data) { $form.BeginInvoke([Action[string]]{ param($line) Append-Log($line) }, $args.Data) | Out-Null }
+  })
+  [void]$script:scanProcess.Start()
+  $script:scanProcess.BeginOutputReadLine()
+  $script:scanProcess.BeginErrorReadLine()
+  $script:isPortScanRunning = $true
+  $script:scanProcessMode = 'security'
+  $btnRunOnce.Enabled = $false
+  $btnStart.Enabled = $false
+  $btnStop.Enabled = $false
+  Append-Log(('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] Security Scan started'))
+  Update-Status
+  $pollTimer.Start()
+}
 $pollTimer.Add_Tick({
   $hasActiveProcess = $false
   if ($script:isProbeRunning -and $script:probeProcess) {
@@ -1431,8 +2016,9 @@ $pollTimer.Add_Tick({
       $btnRunOnce.Enabled = $true
       $btnStart.Enabled = -not $script:isLoopRunning
       $btnStop.Enabled = $script:isLoopRunning
-      if (-not ($scanMode -eq 'remote' -and $exitCode -eq 3)) {
-        Append-Log(('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] Port Scan finished, exit code ' + $exitCode))
+      if (-not (($scanMode -eq 'remote' -or $scanMode -eq 'remote-security') -and $exitCode -eq 3)) {
+        $scanLabel = if ($scanMode -eq 'security') { 'Security Scan' } elseif ($scanMode -eq 'remote-security') { 'Remote Security Scan' } else { 'Port Scan' }
+        Append-Log(('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $scanLabel + ' finished, exit code ' + $exitCode))
       }
       Update-Status
     }
@@ -1448,9 +2034,15 @@ $intervalTimer.Add_Tick({
   Start-ProbeRun
 })
 $signalTimer.Add_Tick({
-  if ($script:isProbeRunning) { return }
-  if ($script:isPortScanRunning) { return }
-  Start-RequestedPortScan
+  try {
+    # Admin-signal polling (always active)
+    if (-not $script:isProbeRunning -and -not $script:isPortScanRunning) {
+      Start-RequestedPortScan
+      if (-not $script:isPortScanRunning) { Start-RequestedSecurityScan }
+    }
+  } catch {
+    Append-Log('[SIGNAL] 輪詢例外: ' + $_.Exception.Message)
+  }
 })
 $btnRunOnce.Add_Click({ Start-ProbeRun })
 $btnStart.Add_Click({
@@ -1471,7 +2063,6 @@ $btnStop.Add_Click({
   Append-Log(('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] Loop mode stopped'))
   Update-Status
 })
-$btnPortScan.Add_Click({ Start-PortScan })
 $btnClose.Add_Click({
   $intervalTimer.Stop()
   $signalTimer.Stop()
@@ -1485,10 +2076,9 @@ $btnClose.Add_Click({
   $form.Close()
 })
 $form.Add_Shown({
-  Append-Log('Control window ready.')
-  Append-Log('Use Run Once for a single check, or Start Loop for repeated runs.')
-Append-Log('Port Scan is ready with Device=所有測試項, Host=AUTO(service hosts), and Ports from admin config when available.')
-  Append-Log('Admin-triggered port scan requests are polled automatically while this window is open.')
+  Append-Log('Probe 控制視窗已就緒。')
+  Append-Log('Run Once：執行單次監控檢查  |  Start Loop：啟動定時循環')
+  Append-Log('安全性掃描與 Port 掃描請由管理頁面觸發，訊號每 5 秒自動輪詢。')
   $signalTimer.Start()
   Update-Status
 })
@@ -1702,6 +2292,15 @@ function shouldOpenControlWindow() {
 }
 
 async function bootstrap() {
+  if (RUNTIME.cli.securityScanMode) {
+    await runSecurityScanOnce();
+    return;
+  }
+  if (RUNTIME.cli.claimSecurityScanMode) {
+    const claimed = await claimAndRunRequestedSecurityScan({ silentNoop: true });
+    if (!claimed) process.exitCode = 3;
+    return;
+  }
   if (RUNTIME.cli.portScanMode) {
     await runPortScanOnce();
     return;
@@ -1719,9 +2318,11 @@ async function bootstrap() {
     await showWindowsControlWindow();
     return;
   }
+  await claimAndRunRequestedSecurityScan({ silentNoop: true });
   await claimAndRunRequestedPortScan({ silentNoop: true });
   await runProbeOnce();
   await claimAndRunRequestedPortScan({ silentNoop: true });
+  await claimAndRunRequestedSecurityScan({ silentNoop: true });
 }
 
 bootstrap().catch(async (error) => {

@@ -12,11 +12,19 @@ const SHEET_PROBE_CHECKS = "probe_checks";
 const SHEET_PROBES = "probes";
 const SHEET_PORT_SCANS = "port_scans";
 const SHEET_NOTIFY_LOGS = "notify_logs";
+const SHEET_SECURITY_SCANS = "security_scans";
 const API_KEY = "";
 
 const PORT_SCAN_HEADERS = [
   "device_name", "service_id", "service_name", "probe_id",
   "host", "open_ports", "scanned_at", "open_count", "total_count"
+];
+
+const SECURITY_SCAN_HEADERS = [
+  "service_id", "service_name", "probe_id", "url", "host",
+  "scanned_at", "grade", "total_issues",
+  "critical_count", "high_count", "medium_count", "low_count", "pass_count",
+  "is_https", "details_json"
 ];
 
 const NOTIFY_LOG_HEADERS = [
@@ -45,6 +53,7 @@ const PROP_LINE_TARGETS = "LINE_TARGETS";
 const PROP_SERVICE_RECOMMENDATION_MIGRATION = "SERVICE_RECOMMENDED_SETTINGS_V1";
 const PROP_PROBE_RUN_SIGNAL = "PROBE_RUN_SIGNAL";
 const PROP_PORT_SCAN_SIGNAL = "PORT_SCAN_SIGNAL";
+const PROP_SECURITY_SCAN_SIGNAL = "SECURITY_SCAN_SIGNAL";
 const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
 const PROBE_RESULT_GRACE_MS = 2 * 60 * 1000;
 
@@ -102,6 +111,10 @@ function initSheets() {
   let s4 = ss.getSheetByName(SHEET_NOTIFY_LOGS);
   if (!s4) s4 = ss.insertSheet(SHEET_NOTIFY_LOGS);
   ensureHeaders_(s4, NOTIFY_LOG_HEADERS);
+
+  let s5 = ss.getSheetByName(SHEET_SECURITY_SCANS);
+  if (!s5) s5 = ss.insertSheet(SHEET_SECURITY_SCANS);
+  ensureHeaders_(s5, SECURITY_SCAN_HEADERS);
 }
 
 function ensureHeaders_(sheet, requiredHeaders) {
@@ -187,6 +200,30 @@ function doGet(e) {
         break;
       case "listPortScans":
         result = listPortScans_();
+        break;
+      case "updateSecurityScan":
+        result = updateSecurityScan_(p);
+        break;
+      case "listSecurityScans":
+        result = listSecurityScans_();
+        break;
+      case "clearSecurityScans":
+        result = clearSecurityScans_();
+        break;
+      case "requestSecurityScanSignal":
+        result = requestSecurityScanSignal_(p);
+        break;
+      case "getSecurityScanSignal":
+        result = getSecurityScanSignal_();
+        break;
+      case "claimSecurityScanSignal":
+        result = claimSecurityScanSignal_(p);
+        break;
+      case "appendSecurityScanSignalLog":
+        result = appendSecurityScanSignalLog_(p);
+        break;
+      case "completeSecurityScanSignal":
+        result = completeSecurityScanSignal_(p);
         break;
       case "metrics":
         result = getMetrics_(p.serviceId, toNum_(p.hours, 24));
@@ -389,6 +426,30 @@ function doPost(e) {
         break;
       case "listPortScans":
         result = listPortScans_();
+        break;
+      case "updateSecurityScan":
+        result = updateSecurityScan_(body);
+        break;
+      case "listSecurityScans":
+        result = listSecurityScans_();
+        break;
+      case "clearSecurityScans":
+        result = clearSecurityScans_();
+        break;
+      case "requestSecurityScanSignal":
+        result = requestSecurityScanSignal_(body);
+        break;
+      case "getSecurityScanSignal":
+        result = getSecurityScanSignal_();
+        break;
+      case "claimSecurityScanSignal":
+        result = claimSecurityScanSignal_(body);
+        break;
+      case "appendSecurityScanSignalLog":
+        result = appendSecurityScanSignalLog_(body);
+        break;
+      case "completeSecurityScanSignal":
+        result = completeSecurityScanSignal_(body);
         break;
       case "markProbeOffline":
         result = markProbeOffline_(body);
@@ -1582,12 +1643,24 @@ function requestPortScanSignal_(payload) {
   var serviceId = String((payload && payload.service_id) || "").trim();
   var serviceName = String((payload && payload.service_name) || "").trim();
   var cfg = getPortScanConfig_();
-  var request = withPortScanSignalLock_(function(session) {
-    if (session && ["pending", "running"].indexOf(String(session.status || "").trim()) !== -1) {
-      return session;
+  // No lock needed: only admin triggers this, check-then-write race is acceptable
+  var session = readPortScanSessionUnsafe_();
+  var request;
+  var portScanBlocked = false;
+  if (session) {
+    var psStatus = String(session.status || '').trim();
+    if (psStatus === 'pending') {
+      portScanBlocked = true;
+    } else if (psStatus === 'running') {
+      var psStart = String(session.claimed_at || session.requested_at || '').trim();
+      portScanBlocked = psStart ? (Date.now() - new Date(psStart).getTime()) <= 10 * 60 * 1000 : false;
     }
+  }
+  if (portScanBlocked) {
+    request = session;
+  } else {
     var requestedAt = new Date().toISOString();
-    var nextSession = {
+    request = {
       request_id: Utilities.getUuid(),
       status: "pending",
       requested_at: requestedAt,
@@ -1612,9 +1685,8 @@ function requestPortScanSignal_(payload) {
         }
       ]
     };
-    writePortScanSessionUnsafe_(nextSession);
-    return nextSession;
-  });
+    writePortScanSessionUnsafe_(request);
+  }
   return {
     ok: true,
     data: request,
@@ -1658,22 +1730,15 @@ function appendPortScanSignalLog_(payload) {
   var probeId = String((payload && payload.probe_id) || "").trim();
   var level = String((payload && payload.level) || "info").trim() || "info";
   var nowIso = new Date().toISOString();
-  var session = withPortScanSignalLock_(function(current) {
-    if (!current || String(current.request_id || "").trim() !== requestId) {
-      return null;
-    }
-    current.updated_at = nowIso;
-    appendPortScanSessionLogUnsafe_(current, {
-      at: nowIso,
-      level: level,
-      probe_id: probeId,
-      message: message
-    });
-    writePortScanSessionUnsafe_(current);
-    return current;
-  });
-  if (!session) return { ok: false, error: "Port scan request not found" };
-  return { ok: true, data: session };
+  // No lock needed: log appends are best-effort
+  var current = readPortScanSessionUnsafe_();
+  if (!current || String(current.request_id || "").trim() !== requestId) {
+    return { ok: false, error: "Port scan request not found" };
+  }
+  current.updated_at = nowIso;
+  appendPortScanSessionLogUnsafe_(current, { at: nowIso, level: level, probe_id: probeId, message: message });
+  writePortScanSessionUnsafe_(current);
+  return { ok: true, data: current };
 }
 
 function completePortScanSignal_(payload) {
@@ -1685,31 +1750,33 @@ function completePortScanSignal_(payload) {
   var resultSummary = String((payload && payload.result_summary) || "").trim();
   var errorText = String((payload && payload.error) || "").trim();
   var nowIso = new Date().toISOString();
-  var session = withPortScanSignalLock_(function(current) {
-    if (!current || String(current.request_id || "").trim() !== requestId) {
-      return null;
-    }
-    current.status = status;
-    current.completed_at = nowIso;
-    current.updated_at = nowIso;
-    current.result_summary = resultSummary;
-    current.error = errorText;
-    appendPortScanSessionLogUnsafe_(current, {
-      at: nowIso,
-      level: status === "failed" ? "error" : "info",
-      probe_id: probeId,
-      message: resultSummary || (status === "failed" ? "Port scan failed" : "Port scan completed")
-    });
-    writePortScanSessionUnsafe_(current);
-    return current;
+  // No lock needed: only the claiming probe calls this
+  var current = readPortScanSessionUnsafe_();
+  if (!current || String(current.request_id || "").trim() !== requestId) {
+    return { ok: false, error: "Port scan request not found" };
+  }
+  current.status = status;
+  current.completed_at = nowIso;
+  current.updated_at = nowIso;
+  current.result_summary = resultSummary;
+  current.error = errorText;
+  appendPortScanSessionLogUnsafe_(current, {
+    at: nowIso,
+    level: status === "failed" ? "error" : "info",
+    probe_id: probeId,
+    message: resultSummary || (status === "failed" ? "Port scan failed" : "Port scan completed")
   });
-  if (!session) return { ok: false, error: "Port scan request not found" };
-  return { ok: true, data: session };
+  writePortScanSessionUnsafe_(current);
+  return { ok: true, data: current };
 }
 
 function withPortScanSignalLock_(callback) {
   var lock = LockService.getScriptLock();
-  lock.waitLock(5000);
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    throw new Error('signal_lock_timeout');
+  }
   try {
     return callback(readPortScanSessionUnsafe_());
   } finally {
@@ -2033,19 +2100,303 @@ function listPortScans_() {
   return { ok: true, data: rows };
 }
 
+// ── Security Scan Signal ─────────────────────────────────────────────────────
+
+function requestSecurityScanSignal_(payload) {
+  var requestedBy = String((payload && payload.requested_by) || 'system').trim() || 'system';
+  var note = String((payload && payload.note) || 'admin security scan').trim() || 'admin security scan';
+  var serviceId = String((payload && payload.service_id) || '').trim();
+  var serviceName = String((payload && payload.service_name) || '').trim();
+  // No lock needed: only admin triggers this, check-then-write race is acceptable
+  var session = readSecurityScanSessionUnsafe_();
+  if (session) {
+    var status = String(session.status || '').trim();
+    var isStale = false;
+    if (status === 'running') {
+      // Treat as stale if running for more than 10 minutes
+      var startedAt = String(session.claimed_at || session.requested_at || '').trim();
+      if (startedAt) {
+        isStale = (Date.now() - new Date(startedAt).getTime()) > 10 * 60 * 1000;
+      }
+    }
+    if (status === 'pending' || (status === 'running' && !isStale)) {
+      return { ok: true, data: session, online_probe_count: getOnlineProbes_(Date.now()).length };
+    }
+  }
+  var requestedAt = new Date().toISOString();
+  var nextSession = {
+    request_id: Utilities.getUuid(),
+    status: 'pending',
+    requested_at: requestedAt,
+    requested_by: requestedBy,
+    service_id: serviceId,
+    service_name: serviceName,
+    note: note,
+    updated_at: requestedAt,
+    claimed_by: '',
+    claimed_at: '',
+    started_at: '',
+    completed_at: '',
+    result_summary: '',
+    error: '',
+    log_lines: [{
+      at: requestedAt,
+      level: 'info',
+      probe_id: '',
+      message: 'Security scan requested by ' + requestedBy + (serviceId ? (' for service ' + (serviceName || serviceId)) : '')
+    }]
+  };
+  writeSecurityScanSessionUnsafe_(nextSession);
+  return { ok: true, data: nextSession, online_probe_count: getOnlineProbes_(Date.now()).length };
+}
+
+function getSecurityScanSignal_() {
+  return { ok: true, data: readSecurityScanSessionUnsafe_() };
+}
+
+function claimSecurityScanSignal_(payload) {
+  var probeId = String((payload && payload.probe_id) || '').trim();
+  if (!probeId) return { ok: false, error: 'Missing probe_id' };
+  var probeName = String((payload && payload.probe_name) || probeId).trim() || probeId;
+  var nowIso = new Date().toISOString();
+  var result = withSecurityScanSignalLock_(function(session) {
+    if (!session || session.status !== 'pending') return null;
+    session.status = 'running';
+    session.claimed_by = probeId;
+    session.claimed_at = nowIso;
+    session.started_at = nowIso;
+    session.updated_at = nowIso;
+    appendSecurityScanSessionLogUnsafe_(session, { at: nowIso, level: 'info', probe_id: probeId, message: 'Claimed by probe ' + probeName });
+    writeSecurityScanSessionUnsafe_(session);
+    return session;
+  });
+  return { ok: true, data: result };
+}
+
+function appendSecurityScanSignalLog_(payload) {
+  var requestId = String((payload && payload.request_id) || '').trim();
+  var message = String((payload && payload.message) || '').trim();
+  if (!requestId) return { ok: false, error: 'Missing request_id' };
+  if (!message) return { ok: false, error: 'Missing message' };
+  var probeId = String((payload && payload.probe_id) || '').trim();
+  var level = String((payload && payload.level) || 'info').trim() || 'info';
+  var nowIso = new Date().toISOString();
+  // No lock needed: log appends are best-effort; rare race only loses a log line
+  var current = readSecurityScanSessionUnsafe_();
+  if (!current || String(current.request_id || '').trim() !== requestId) {
+    return { ok: false, error: 'Security scan request not found' };
+  }
+  current.updated_at = nowIso;
+  appendSecurityScanSessionLogUnsafe_(current, { at: nowIso, level: level, probe_id: probeId, message: message });
+  writeSecurityScanSessionUnsafe_(current);
+  return { ok: true, data: current };
+}
+
+function completeSecurityScanSignal_(payload) {
+  var requestId = String((payload && payload.request_id) || '').trim();
+  if (!requestId) return { ok: false, error: 'Missing request_id' };
+  var probeId = String((payload && payload.probe_id) || '').trim();
+  var status = String((payload && payload.status) || '').trim().toLowerCase();
+  if (!status) status = (payload && payload.ok === false) ? 'failed' : 'completed';
+  var resultSummary = String((payload && payload.result_summary) || '').trim();
+  var errorText = String((payload && payload.error) || '').trim();
+  var nowIso = new Date().toISOString();
+  // No lock needed: only the claiming probe calls this; no race condition
+  var current = readSecurityScanSessionUnsafe_();
+  if (!current || String(current.request_id || '').trim() !== requestId) {
+    return { ok: false, error: 'Security scan request not found' };
+  }
+  current.status = status;
+  current.completed_at = nowIso;
+  current.updated_at = nowIso;
+  current.result_summary = resultSummary;
+  current.error = errorText;
+  appendSecurityScanSessionLogUnsafe_(current, { at: nowIso, level: status === 'failed' ? 'error' : 'info', probe_id: probeId, message: resultSummary || (status === 'failed' ? 'Security scan failed' : 'Security scan completed') });
+  writeSecurityScanSessionUnsafe_(current);
+  return { ok: true, data: current };
+}
+
+function withSecurityScanSignalLock_(callback) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    throw new Error('signal_lock_timeout');
+  }
+  try {
+    return callback(readSecurityScanSessionUnsafe_());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function readSecurityScanSessionUnsafe_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(PROP_SECURITY_SCAN_SIGNAL);
+  if (!raw) return null;
+  try { return normalizeSecurityScanSession_(JSON.parse(raw)); } catch (_) { return null; }
+}
+
+function writeSecurityScanSessionUnsafe_(session) {
+  var props = PropertiesService.getScriptProperties();
+  if (!session) { props.deleteProperty(PROP_SECURITY_SCAN_SIGNAL); return; }
+  props.setProperty(PROP_SECURITY_SCAN_SIGNAL, JSON.stringify(normalizeSecurityScanSession_(session)));
+}
+
+function normalizeSecurityScanSession_(session) {
+  var n = cloneRecord_(session || {});
+  n.request_id    = String(n.request_id    || '').trim();
+  n.status        = String(n.status        || 'pending').trim() || 'pending';
+  n.requested_at  = String(n.requested_at  || '').trim();
+  n.requested_by  = String(n.requested_by  || '').trim();
+  n.service_id    = String(n.service_id    || '').trim();
+  n.service_name  = String(n.service_name  || '').trim();
+  n.note          = String(n.note          || '').trim();
+  n.updated_at    = String(n.updated_at    || '').trim();
+  n.claimed_by    = String(n.claimed_by    || '').trim();
+  n.claimed_at    = String(n.claimed_at    || '').trim();
+  n.started_at    = String(n.started_at    || '').trim();
+  n.completed_at  = String(n.completed_at  || '').trim();
+  n.result_summary = String(n.result_summary || '').trim();
+  n.error         = String(n.error         || '').trim();
+  n.log_lines = Array.isArray(n.log_lines)
+    ? n.log_lines.map(function(l) {
+        return { at: String(l&&l.at||'').trim(), level: String(l&&l.level||'info').trim()||'info', probe_id: String(l&&l.probe_id||'').trim(), message: String(l&&l.message||'').trim() };
+      }).filter(function(l) { return !!l.message; }).slice(-120)
+    : [];
+  return n;
+}
+
+function appendSecurityScanSessionLogUnsafe_(session, entry) {
+  if (!Array.isArray(session.log_lines)) session.log_lines = [];
+  session.log_lines.push({ at: String(entry&&entry.at||new Date().toISOString()).trim(), level: String(entry&&entry.level||'info').trim()||'info', probe_id: String(entry&&entry.probe_id||'').trim(), message: String(entry&&entry.message||'').trim() });
+}
+
+// ── End Security Scan Signal ─────────────────────────────────────────────────
+
+function updateSecurityScan_(payload) {
+  var serviceId = String(payload.service_id || '').trim();
+  if (!serviceId) return { ok: false, error: 'Missing service_id' };
+
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SHEET_SECURITY_SCANS);
+  if (!sh) { sh = ss.insertSheet(SHEET_SECURITY_SCANS); }
+  ensureHeaders_(sh, SECURITY_SCAN_HEADERS);
+
+  var serviceName = String(payload.service_name || '').trim();
+  var probeId    = String(payload.probe_id || '').trim();
+  var url        = String(payload.url || '').trim();
+  var host       = String(payload.host || '').trim();
+  var scannedAt  = String(payload.scanned_at || new Date().toISOString()).trim();
+  var grade      = String(payload.grade || '').trim();
+  var totalIssues = Number(payload.total_issues || 0);
+  var criticalCount = Number(payload.critical_count || 0);
+  var highCount  = Number(payload.high_count || 0);
+  var mediumCount = Number(payload.medium_count || 0);
+  var lowCount   = Number(payload.low_count || 0);
+  var passCount  = Number(payload.pass_count || 0);
+  var isHttps    = toBool_(payload.is_https);
+  var detailsJson = String(payload.details_json || '').trim();
+
+  var rowData = {
+    service_id: serviceId,
+    service_name: serviceName,
+    probe_id: probeId,
+    url: url,
+    host: host,
+    scanned_at: scannedAt,
+    grade: grade,
+    total_issues: totalIssues,
+    critical_count: criticalCount,
+    high_count: highCount,
+    medium_count: mediumCount,
+    low_count: lowCount,
+    pass_count: passCount,
+    is_https: isHttps,
+    details_json: detailsJson
+  };
+
+  var lastRow = sh.getLastRow();
+  if (lastRow >= 2) {
+    var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    var idx = indexMap_(header);
+    var data = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
+    for (var r = 0; r < data.length; r++) {
+      var rowServiceId = idx.service_id !== undefined ? String(data[r][idx.service_id] || '').trim() : '';
+      if (rowServiceId === serviceId) {
+        var rowNum = r + 2;
+        header.forEach(function(h, c) {
+          if (rowData[h] !== undefined) {
+            sh.getRange(rowNum, c + 1).setValue(rowData[h]);
+          }
+        });
+        return { ok: true, updated: true, row_num: rowNum, service_id: serviceId };
+      }
+    }
+  }
+
+  var header2 = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  sh.appendRow(rowFromObj_(header2, rowData));
+  return { ok: true, updated: false, service_id: serviceId };
+}
+
+function listSecurityScans_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SECURITY_SCANS);
+  if (!sh || sh.getLastRow() < 2) return { ok: true, data: [] };
+  var values = sh.getDataRange().getValues();
+  var idx = indexMap_(values[0]);
+  var rows = values.slice(1).map(function(row) {
+    var scannedAt = idx.scanned_at !== undefined ? (row[idx.scanned_at] || '') : '';
+    var scannedMs = scannedAt ? new Date(scannedAt).getTime() : 0;
+    return {
+      service_id: idx.service_id !== undefined ? String(row[idx.service_id] || '').trim() : '',
+      service_name: idx.service_name !== undefined ? String(row[idx.service_name] || '').trim() : '',
+      probe_id: idx.probe_id !== undefined ? String(row[idx.probe_id] || '').trim() : '',
+      url: idx.url !== undefined ? String(row[idx.url] || '').trim() : '',
+      host: idx.host !== undefined ? String(row[idx.host] || '').trim() : '',
+      scanned_at: scannedAt,
+      grade: idx.grade !== undefined ? String(row[idx.grade] || '').trim() : '',
+      total_issues: idx.total_issues !== undefined ? Number(row[idx.total_issues] || 0) : 0,
+      critical_count: idx.critical_count !== undefined ? Number(row[idx.critical_count] || 0) : 0,
+      high_count: idx.high_count !== undefined ? Number(row[idx.high_count] || 0) : 0,
+      medium_count: idx.medium_count !== undefined ? Number(row[idx.medium_count] || 0) : 0,
+      low_count: idx.low_count !== undefined ? Number(row[idx.low_count] || 0) : 0,
+      pass_count: idx.pass_count !== undefined ? Number(row[idx.pass_count] || 0) : 0,
+      is_https: idx.is_https !== undefined ? toBool_(row[idx.is_https]) : false,
+      details_json: idx.details_json !== undefined ? String(row[idx.details_json] || '').trim() : '',
+      sort_ts: Number.isFinite(scannedMs) ? scannedMs : 0
+    };
+  }).sort(function(left, right) {
+    return Number(right.sort_ts || 0) - Number(left.sort_ts || 0);
+  }).map(function(item) {
+    delete item.sort_ts;
+    return item;
+  });
+  return { ok: true, data: rows };
+}
+
+function clearSecurityScans_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SECURITY_SCANS);
+  if (!sh || sh.getLastRow() < 2) return { ok: true, deleted: 0 };
+  var count = sh.getLastRow() - 1;
+  sh.deleteRows(2, count);
+  return { ok: true, deleted: count };
+}
+
 function dashboardInit_(hours) {
   var hoursNum = toNum_(hours, 24);
   var svcResult     = listServices_();
   var metricsResult = metricsAll_(hoursNum);
   var dateResult    = getChecksDateRange_();
   var portScansResult = listPortScans_();
+  var securityScansResult = listSecurityScans_();
   return {
     ok: true,
     data: {
       services:       svcResult.data     || [],
       metricsAll:     metricsResult.data || {},
       checksDateRange: dateResult.data   || {},
-      portScans:      portScansResult.data || []
+      portScans:      portScansResult.data || [],
+      securityScans:  securityScansResult.data || []
     }
   };
 }

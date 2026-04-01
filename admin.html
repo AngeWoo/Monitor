@@ -132,6 +132,37 @@
 
     <section class="panel">
       <div class="panel-header">
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg></span><span>安全性掃描</span></h2>
+        <div class="row-actions">
+          <button id="triggerSecurityScanBtn" class="btn secondary" type="button">開始安全性掃描</button>
+          <button id="clearSecurityScansBtn" class="btn danger" type="button">清除掃描結果</button>
+        </div>
+      </div>
+      <div class="security-scan-info" style="padding:0 16px 12px">
+        <p class="message report-inline-note" style="margin:0">點擊「開始安全性掃描」後，將通知上線中的 Probe 執行安全性掃描，掃描 HTTP 安全標頭、SSL/TLS 憑證、敏感路徑。</p>
+      </div>
+      <div class="table-wrap" style="padding:0 16px 16px">
+        <table>
+          <thead>
+            <tr>
+              <th>服務名稱</th>
+              <th>Host</th>
+              <th>等級</th>
+              <th>問題數</th>
+              <th>HTTPS</th>
+              <th>掃描時間</th>
+              <th>Probe</th>
+            </tr>
+          </thead>
+          <tbody id="adminSecurityScansBody"></tbody>
+        </table>
+      </div>
+      <p id="securityScanMessage" class="message"></p>
+      <pre id="securityScanRequestLog" class="port-scan-request-log">按下「開始安全性掃描」後，這裡會顯示回報紀錄。</pre>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
         <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M10 11v5"></path><path d="M14 11v5"></path><path d="M6 7l1 12h10l1-12"></path><path d="M9 7V4h6v3"></path></svg></span><span>測試資料清理</span></h2>
         <div class="row-actions">
           <span id="deleteTestDataDatesInfo" class="hint"></span>

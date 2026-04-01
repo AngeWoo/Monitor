@@ -95,6 +95,33 @@
       </div>
     </section>
 
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg></span><span>安全性掃描</span></h2>
+        <span class="hint">HTTP 安全標頭、SSL/TLS 憑證、敏感路徑偵測</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>服務名稱</th>
+              <th>Host</th>
+              <th>等級</th>
+              <th>問題數</th>
+              <th>嚴重</th>
+              <th>高</th>
+              <th>中</th>
+              <th>低</th>
+              <th>HTTPS</th>
+              <th>掃描時間</th>
+              <th>動作</th>
+            </tr>
+          </thead>
+          <tbody id="securityScansBody"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="charts-grid">
       <article class="panel">
         <div class="panel-header">
@@ -175,6 +202,21 @@
           <strong>正在準備服務資料</strong>
           <p>請從服務列表按下查看詳情，這裡會顯示該服務的基本資訊與最近狀態。</p>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="securityDetailModal" class="service-modal hidden" aria-hidden="true">
+    <div class="service-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="securityDetailModalTitle" style="max-width:820px">
+      <div class="service-modal-header">
+        <div>
+          <h2 id="securityDetailModalTitle">安全性掃描詳情</h2>
+          <p id="securityDetailModalSubtitle" class="service-modal-subtitle"></p>
+        </div>
+        <button id="securityDetailModalClose" class="service-modal-close" type="button" aria-label="關閉視窗">×</button>
+      </div>
+      <div id="securityDetailModalBody" class="service-modal-body">
+        <p>載入中...</p>
       </div>
     </div>
   </div>
