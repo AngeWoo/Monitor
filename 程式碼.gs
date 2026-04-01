@@ -280,6 +280,9 @@ function doGet(e) {
       case "deleteTestDataByDate":
         result = deleteTestDataByDate_(p);
         break;
+      case "deleteTestDataByDateRange":
+        result = deleteTestDataByDateRange_(p);
+        break;
       case "runNow":
         result = runNow_(p);
         break;
@@ -297,6 +300,9 @@ function doGet(e) {
         break;
       case "sendReportNow":
         result = sendStatusReportNow_();
+        break;
+      case "sendFullReport":
+        result = sendFullReport_(p);
         break;
       case "debugLineTarget":
         result = debugLineTarget_(p);
@@ -367,6 +373,9 @@ function doPost(e) {
       case "deleteTestDataByDate":
         result = deleteTestDataByDate_(body);
         break;
+      case "deleteTestDataByDateRange":
+        result = deleteTestDataByDateRange_(body);
+        break;
       case "runNow":
         result = runNow_(body);
         break;
@@ -384,6 +393,9 @@ function doPost(e) {
         break;
       case "sendReportNow":
         result = sendStatusReportNow_();
+        break;
+      case "sendFullReport":
+        result = sendFullReport_(body);
         break;
       case "debugLineTarget":
         result = debugLineTarget_(body);
@@ -2628,6 +2640,89 @@ function deleteTestDataByDate_(payload) {
   };
 }
 
+/*************** Delete By Date Range ***************/
+function deleteTestDataByDateRange_(payload) {
+  var dateFrom = String((payload && payload.date_from) || '').trim();
+  var dateTo   = String((payload && payload.date_to)   || '').trim();
+  var re = /^\d{4}-\d{2}-\d{2}$/;
+  if (!re.test(dateFrom) || !re.test(dateTo)) {
+    return { ok: false, error: 'Invalid date range, expected YYYY-MM-DD for both date_from and date_to' };
+  }
+  if (dateFrom > dateTo) {
+    return { ok: false, error: 'date_from must be <= date_to' };
+  }
+
+  var sheetName = String((payload && payload.sheet) || TEST_DELETE_DEFAULT_SHEET).trim();
+  var sh = SpreadsheetApp.getActive().getSheetByName(sheetName);
+  if (!sh) return { ok: false, error: 'Sheet not found: ' + sheetName };
+
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) {
+    return { ok: true, data: { date_from: dateFrom, date_to: dateTo, sheet: sheetName, deleted_count: 0 } };
+  }
+
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx = indexMap_(header);
+  if (idx.timestamp === undefined) return { ok: false, error: 'Missing timestamp column' };
+
+  var tsColIdx = idx.timestamp + 1;
+  var tsValues = sh.getRange(2, tsColIdx, lastRow - 1, 1).getValues();
+  var tz = Session.getScriptTimeZone();
+  var fmtCache = {};
+  var rowsToDelete = [];
+
+  for (var r = 0; r < tsValues.length; r++) {
+    var v = tsValues[r][0];
+    if (!v) continue;
+    var ms;
+    if (Object.prototype.toString.call(v) === '[object Date]') {
+      ms = v.getTime();
+    } else if (typeof v === 'number' && Number.isFinite(v)) {
+      ms = Math.round((v - 25569) * 86400 * 1000);
+    } else {
+      ms = new Date(String(v)).getTime();
+    }
+    if (!ms || isNaN(ms)) continue;
+    var hourKey = Math.floor(ms / 3600000);
+    if (!(hourKey in fmtCache)) {
+      fmtCache[hourKey] = Utilities.formatDate(new Date(ms), tz, 'yyyy-MM-dd');
+    }
+    var d = fmtCache[hourKey];
+    if (d >= dateFrom && d <= dateTo) {
+      rowsToDelete.push(r + 2);
+    }
+  }
+
+  if (rowsToDelete.length === 0) {
+    return { ok: true, data: { date_from: dateFrom, date_to: dateTo, sheet: sheetName, deleted_count: 0 } };
+  }
+
+  rowsToDelete.sort(function(a, b) { return a - b; });
+  var groups = [];
+  var gStart = rowsToDelete[0], gEnd = rowsToDelete[0];
+  for (var i = 1; i < rowsToDelete.length; i++) {
+    if (rowsToDelete[i] === gEnd + 1) {
+      gEnd = rowsToDelete[i];
+    } else {
+      groups.push({ start: gStart, count: gEnd - gStart + 1 });
+      gStart = rowsToDelete[i];
+      gEnd   = rowsToDelete[i];
+    }
+  }
+  groups.push({ start: gStart, count: gEnd - gStart + 1 });
+
+  for (var g = groups.length - 1; g >= 0; g--) {
+    sh.deleteRows(groups[g].start, groups[g].count);
+  }
+
+  invalidateChecksDateCache_();
+
+  return {
+    ok: true,
+    data: { date_from: dateFrom, date_to: dateTo, sheet: sheetName, deleted_count: rowsToDelete.length }
+  };
+}
+
 /*************** Cache Keys & TTLs ***************/
 var CACHE_KEY_SERVICES    = 'list_services_v2';
 var CACHE_TTL_SERVICES    = 35;   // 35 seconds
@@ -2939,6 +3034,306 @@ function updateReportConfig_(payload) {
 }
 
 /*************** Report Sending ***************/
+
+/**
+ * 發送完整報告：收件人由前端傳入（套用 Mail 收件人欄位），
+ * 內容涵蓋目前儀表板所有資料：服務狀態、Port 掃描、安全性掃描、統計摘要。
+ */
+function sendFullReport_(payload) {
+  var recipientsRaw = String((payload && payload.recipients) || '').trim();
+  var recipients = parseRecipients_(recipientsRaw);
+  if (!recipients.length) {
+    return { ok: false, error: 'No recipients specified' };
+  }
+
+  var cfg = getReportConfig_();
+  var tz = Session.getScriptTimeZone();
+  var now = new Date();
+  var at = Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm:ss');
+  var monitorLabel = getMonitorLabel_(cfg);
+  var dashboardUrl = getDashboardUrl_();
+  var adminPageUrl = getAdminPageUrl_();
+
+  // ── 服務狀態 ────────────────────────────────────────────────────────────
+  var services = (listServices_().data || []).filter(function(s) { return toBool_(s.enabled); });
+  var issues = services.filter(function(s) { return !isUpEquivalentStatus_(s.last_status); });
+  var upCount = services.length - issues.length;
+  var statusLabel = issues.length > 0 ? 'ALERT' : 'OK';
+
+  var latencyValues = services
+    .map(function(s) { return Number(s.last_latency_ms); })
+    .filter(function(v) { return Number.isFinite(v) && v >= 0; });
+  var sortedLatency = latencyValues.slice().sort(function(a, b) { return a - b; });
+  var avgLatency = sortedLatency.length ? Math.round(sortedLatency.reduce(function(sum, v) { return sum + v; }, 0) / sortedLatency.length) : null;
+  var p95Latency = sortedLatency.length ? sortedLatency[Math.min(sortedLatency.length - 1, Math.floor((sortedLatency.length - 1) * 0.95))] : null;
+  var minLatency = sortedLatency.length ? sortedLatency[0] : null;
+  var maxLatency = sortedLatency.length ? sortedLatency[sortedLatency.length - 1] : null;
+  var availabilityRate = services.length ? ((upCount / services.length) * 100).toFixed(1) : '0.0';
+
+  // ── Port 掃描 ────────────────────────────────────────────────────────────
+  var portMap = readPortScansMap_();
+  var portScans = (listPortScans_().data || []);
+
+  // ── 安全性掃描 ───────────────────────────────────────────────────────────
+  var secScans = (listSecurityScans_().data || []);
+  // 每個 service 只取最新一筆
+  var secMap = {};
+  secScans.forEach(function(sc) {
+    var sid = String(sc.service_id || sc.service_name || '').trim();
+    if (sid && !secMap[sid]) { secMap[sid] = sc; }
+  });
+
+  // ── HTML 組裝 ────────────────────────────────────────────────────────────
+  var thStyle = 'background:#1a73e8;color:#fff;padding:6px 10px;text-align:left;white-space:nowrap;';
+  var tdStyle = 'padding:5px 10px;border-bottom:1px solid #e0e0e0;vertical-align:top;';
+  var trAltStyle = 'background:#f8f9fa;';
+
+  // 服務狀態表
+  var svcRows = services.length ? services.map(function(s, i) {
+    var isIssue = !isUpEquivalentStatus_(s.last_status);
+    var statusColor = isIssue ? '#d93025' : '#188038';
+    var portData = portMap[String(s.name || '')];
+    var openPorts = portData ? portData.open_ports : null;
+    var portsCell = openPorts && openPorts.length
+      ? '<span style="color:#0e7a6a;font-weight:600;">' + openPorts.join(', ') + '</span>'
+      : '<span style="color:#999;">-</span>';
+    var rowStyle = i % 2 === 1 ? trAltStyle : '';
+    return '<tr style="' + rowStyle + '">' +
+      '<td style="' + tdStyle + '">' + escapeHtml_(s.name) + '</td>' +
+      '<td style="' + tdStyle + '"><a href="' + escapeHtml_(s.url) + '">' + escapeHtml_(s.url) + '</a></td>' +
+      '<td style="' + tdStyle + 'color:' + statusColor + ';font-weight:700;">' + escapeHtml_(String(s.last_status || 'UNKNOWN')) + '</td>' +
+      '<td style="' + tdStyle + '">' + escapeHtml_(String(s.last_http_code || '-')) + '</td>' +
+      '<td style="' + tdStyle + '">' + escapeHtml_(String(s.last_latency_ms || '-')) + '</td>' +
+      '<td style="' + tdStyle + '">' + portsCell + '</td>' +
+      '<td style="' + tdStyle + 'white-space:nowrap;">' + escapeHtml_(String(s.last_check_at || '-')) + '</td>' +
+      '</tr>';
+  }).join('') : '<tr><td colspan="7" style="' + tdStyle + '">No enabled services</td></tr>';
+
+  var svcTableHtml =
+    '<h3 style="margin:20px 0 6px;color:#1a73e8;">&#x1F4CA; 服務狀態</h3>' +
+    '<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px;">' +
+    '<thead><tr>' +
+    '<th style="' + thStyle + '">服務名稱</th>' +
+    '<th style="' + thStyle + '">URL</th>' +
+    '<th style="' + thStyle + '">狀態</th>' +
+    '<th style="' + thStyle + '">HTTP</th>' +
+    '<th style="' + thStyle + '">延遲(ms)</th>' +
+    '<th style="' + thStyle + '">開放 Ports</th>' +
+    '<th style="' + thStyle + '">最後檢查</th>' +
+    '</tr></thead>' +
+    '<tbody>' + svcRows + '</tbody></table>';
+
+  // severity 對應色碼與標籤
+  var severityColor = { critical: '#d93025', high: '#e37400', medium: '#9c6e00', low: '#188038', pass: '#888', info: '#1a73e8', error: '#d93025' };
+  var severityLabel = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', pass: 'Pass', info: 'Info', error: 'Error' };
+
+  // 安全性掃描（每個服務展開詳情）
+  var secBlockHtml = '<h3 style="margin:24px 0 6px;color:#1a73e8;">&#x1F512; 安全性掃描</h3>';
+
+  if (!services.length) {
+    secBlockHtml += '<p style="font-size:13px;color:#999;">無服務資料</p>';
+  } else {
+    services.forEach(function(s) {
+      var sid = String(s.id || s.name || '').trim();
+      var sc = secMap[sid] || secMap[String(s.name || '').trim()];
+
+      var gradeColor = !sc ? '#999'
+        : (sc.grade === 'A' || sc.grade === 'A+') ? '#188038'
+        : sc.grade === 'B' ? '#e37400'
+        : sc.grade === 'F' ? '#d93025' : '#555';
+
+      // ── 服務標題列 ───────────────────────────────────────────────────
+      var detailLink = '';
+      if (sc && adminPageUrl) {
+        var linkSid = encodeURIComponent(String(sc.service_id || sc.service_name || s.name || '').trim());
+        detailLink = '&nbsp;&nbsp;<a href="' + escapeHtml_(adminPageUrl + '#sec-' + linkSid) + '" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#1a73e8;text-decoration:none;border:1px solid #1a73e8;padding:1px 8px;border-radius:4px;">查看詳情 &#x2197;</a>';
+      }
+      secBlockHtml +=
+        '<div style="margin:10px 0 4px;padding:6px 10px;background:#f1f3f4;border-left:4px solid ' + gradeColor + ';border-radius:2px;">' +
+        '<strong style="font-size:13px;">' + escapeHtml_(s.name) + '</strong>' +
+        (sc ? (
+          '&nbsp;&nbsp;<span style="font-weight:700;color:' + gradeColor + ';">Grade: ' + escapeHtml_(sc.grade || '-') + '</span>' +
+          '&nbsp;&nbsp;' + (sc.is_https ? '<span style="color:#188038;">&#x1F512; HTTPS</span>' : '<span style="color:#d93025;">&#x26A0; HTTP</span>') +
+          '&nbsp;&nbsp;<span style="color:#555;font-size:12px;">掃描時間: ' + escapeHtml_(String(sc.scanned_at || '-')) + '</span>' +
+          (sc.critical_count ? '&nbsp;&nbsp;<span style="color:#d93025;font-size:12px;">Critical:' + sc.critical_count + '</span>' : '') +
+          (sc.high_count     ? '&nbsp;&nbsp;<span style="color:#e37400;font-size:12px;">High:' + sc.high_count + '</span>' : '') +
+          (sc.medium_count   ? '&nbsp;&nbsp;<span style="color:#9c6e00;font-size:12px;">Medium:' + sc.medium_count + '</span>' : '') +
+          (sc.low_count      ? '&nbsp;&nbsp;<span style="color:#188038;font-size:12px;">Low:' + sc.low_count + '</span>' : '') +
+          detailLink
+        ) : '<span style="color:#999;font-size:12px;">　尚未掃描</span>') +
+        '</div>';
+
+      if (!sc) return;
+
+      // ── 解析 details_json ────────────────────────────────────────────
+      var details = null;
+      try { details = JSON.parse(sc.details_json || 'null'); } catch (_) {}
+
+      if (!details) return;
+
+      var detailTdStyle = 'padding:4px 8px;border-bottom:1px solid #efefef;font-size:12px;';
+      var detailThStyle = 'padding:4px 8px;background:#e8eaed;font-size:12px;text-align:left;color:#444;';
+
+      // TLS 詳情
+      if (details.tls) {
+        var tls = details.tls;
+        var tlsColor = severityColor[tls.severity] || '#555';
+        secBlockHtml +=
+          '<div style="margin:2px 0 0 12px;">' +
+          '<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;margin-bottom:6px;">' +
+          '<thead><tr><th colspan="2" style="' + detailThStyle + '">&#x1F4DC; SSL/TLS 憑證</th></tr></thead><tbody>' +
+          '<tr><td style="' + detailTdStyle + 'color:#555;width:160px;">Protocol</td><td style="' + detailTdStyle + 'color:' + tlsColor + ';font-weight:600;">' + escapeHtml_(tls.protocol || '-') + '</td></tr>' +
+          '<tr style="background:#f9f9f9;"><td style="' + detailTdStyle + 'color:#555;">Cipher</td><td style="' + detailTdStyle + '">' + escapeHtml_(tls.cipher || '-') + '</td></tr>' +
+          '<tr><td style="' + detailTdStyle + 'color:#555;">Subject</td><td style="' + detailTdStyle + '">' + escapeHtml_(tls.cert_subject || '-') + '</td></tr>' +
+          '<tr style="background:#f9f9f9;"><td style="' + detailTdStyle + 'color:#555;">Issuer</td><td style="' + detailTdStyle + '">' + escapeHtml_(tls.cert_issuer || '-') + '</td></tr>' +
+          '<tr><td style="' + detailTdStyle + 'color:#555;">有效期至</td><td style="' + detailTdStyle + (tls.cert_expired ? 'color:#d93025;font-weight:700;' : '') + '">' + escapeHtml_(String(tls.cert_valid_to || '-')) + (tls.cert_days_remaining !== undefined ? ' (' + tls.cert_days_remaining + ' 天)' : '') + '</td></tr>' +
+          '<tr style="background:#f9f9f9;"><td style="' + detailTdStyle + 'color:#555;">自簽憑證</td><td style="' + detailTdStyle + (tls.cert_self_signed ? 'color:#e37400;' : 'color:#188038;') + '">' + (tls.cert_self_signed ? '&#x26A0; 是' : '&#x2713; 否') + '</td></tr>' +
+          '</tbody></table></div>';
+      }
+
+      // Headers 詳情
+      if (details.headers && details.headers.length) {
+        var headerRows = details.headers.map(function(h, hi) {
+          var sev = String(h.severity || 'pass').toLowerCase();
+          var color = severityColor[sev] || '#555';
+          var lbl = severityLabel[sev] || sev;
+          var bg = hi % 2 === 1 ? 'background:#f9f9f9;' : '';
+          return '<tr style="' + bg + '">' +
+            '<td style="' + detailTdStyle + 'width:160px;">' + escapeHtml_(h.check || h.header || '-') + '</td>' +
+            '<td style="' + detailTdStyle + 'font-weight:600;color:' + color + ';width:70px;">' + lbl + '</td>' +
+            '<td style="' + detailTdStyle + 'color:#555;">' + escapeHtml_(h.description || (h.present ? h.value : '-')) + '</td>' +
+            '</tr>';
+        }).join('');
+        secBlockHtml +=
+          '<div style="margin:2px 0 0 12px;">' +
+          '<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;margin-bottom:6px;">' +
+          '<thead><tr>' +
+          '<th style="' + detailThStyle + 'width:160px;">&#x1F4CB; Security Headers</th>' +
+          '<th style="' + detailThStyle + 'width:70px;">結果</th>' +
+          '<th style="' + detailThStyle + '">說明</th>' +
+          '</tr></thead><tbody>' + headerRows + '</tbody></table></div>';
+      }
+
+      // Sensitive paths 詳情
+      if (details.paths && details.paths.length) {
+        var pathRows = details.paths.map(function(p, pi) {
+          var sev = String(p.severity || 'pass').toLowerCase();
+          var color = sev === 'pass' ? '#188038' : (severityColor[sev] || '#555');
+          var lbl = sev === 'pass' ? '&#x2713; 安全' : ('&#x26A0; ' + (severityLabel[sev] || sev));
+          var bg = pi % 2 === 1 ? 'background:#f9f9f9;' : '';
+          return '<tr style="' + bg + '">' +
+            '<td style="' + detailTdStyle + 'width:160px;">' + escapeHtml_(p.label || p.path || '-') + '</td>' +
+            '<td style="' + detailTdStyle + 'width:60px;color:#555;font-family:monospace;">' + (p.status_code || '-') + '</td>' +
+            '<td style="' + detailTdStyle + 'font-weight:600;color:' + color + ';width:80px;">' + lbl + '</td>' +
+            '<td style="' + detailTdStyle + 'color:#555;">' + escapeHtml_(p.description || '-') + '</td>' +
+            '</tr>';
+        }).join('');
+        secBlockHtml +=
+          '<div style="margin:2px 0 6px 12px;">' +
+          '<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;margin-bottom:6px;">' +
+          '<thead><tr>' +
+          '<th style="' + detailThStyle + 'width:160px;">&#x1F50E; 敏感路徑</th>' +
+          '<th style="' + detailThStyle + 'width:60px;">HTTP</th>' +
+          '<th style="' + detailThStyle + 'width:80px;">狀態</th>' +
+          '<th style="' + detailThStyle + '">說明</th>' +
+          '</tr></thead><tbody>' + pathRows + '</tbody></table></div>';
+      }
+    });
+  }
+
+  var secTableHtml = secBlockHtml;
+
+  // Port 掃描表
+  var portRows = portScans.length ? portScans.map(function(p, i) {
+    var ports = p.open_ports && p.open_ports.length ? p.open_ports.join(', ') : '-';
+    return '<tr style="' + (i % 2 === 1 ? trAltStyle : '') + '">' +
+      '<td style="' + tdStyle + '">' + escapeHtml_(p.service_name || p.device_name || '-') + '</td>' +
+      '<td style="' + tdStyle + '">' + escapeHtml_(p.host || '-') + '</td>' +
+      '<td style="' + tdStyle + 'color:#0e7a6a;font-weight:600;">' + escapeHtml_(ports) + '</td>' +
+      '<td style="' + tdStyle + '">' + p.open_count + ' / ' + p.total_count + '</td>' +
+      '<td style="' + tdStyle + 'white-space:nowrap;">' + escapeHtml_(String(p.scanned_at || '-')) + '</td>' +
+      '</tr>';
+  }).join('') : '<tr><td colspan="5" style="' + tdStyle + '">尚無 Port 掃描紀錄</td></tr>';
+
+  var portTableHtml =
+    '<h3 style="margin:24px 0 6px;color:#1a73e8;">&#x1F50D; Port 掃描</h3>' +
+    '<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px;">' +
+    '<thead><tr>' +
+    '<th style="' + thStyle + '">服務 / 裝置</th>' +
+    '<th style="' + thStyle + '">主機</th>' +
+    '<th style="' + thStyle + '">開放 Ports</th>' +
+    '<th style="' + thStyle + '">開放 / 掃描</th>' +
+    '<th style="' + thStyle + '">掃描時間</th>' +
+    '</tr></thead>' +
+    '<tbody>' + portRows + '</tbody></table>';
+
+  // 統計摘要
+  var statsHtml =
+    '<h3 style="margin:24px 0 6px;color:#1a73e8;">&#x1F4C8; 統計摘要</h3>' +
+    '<table border="0" cellpadding="0" cellspacing="0" style="font-size:13px;">' +
+    '<tr><td style="' + tdStyle + 'color:#555;">總服務數</td><td style="' + tdStyle + 'font-weight:700;">' + services.length + '</td></tr>' +
+    '<tr style="' + trAltStyle + '"><td style="' + tdStyle + 'color:#555;">UP</td><td style="' + tdStyle + 'font-weight:700;color:#188038;">' + upCount + '</td></tr>' +
+    '<tr><td style="' + tdStyle + 'color:#555;">DOWN / 異常</td><td style="' + tdStyle + 'font-weight:700;color:#d93025;">' + issues.length + '</td></tr>' +
+    '<tr style="' + trAltStyle + '"><td style="' + tdStyle + 'color:#555;">可用率</td><td style="' + tdStyle + 'font-weight:700;">' + availabilityRate + '%</td></tr>' +
+    '<tr><td style="' + tdStyle + 'color:#555;">平均延遲</td><td style="' + tdStyle + '">' + (avgLatency !== null ? avgLatency + ' ms' : 'N/A') + '</td></tr>' +
+    '<tr style="' + trAltStyle + '"><td style="' + tdStyle + 'color:#555;">P95 延遲</td><td style="' + tdStyle + '">' + (p95Latency !== null ? p95Latency + ' ms' : 'N/A') + '</td></tr>' +
+    '<tr><td style="' + tdStyle + 'color:#555;">最小延遲</td><td style="' + tdStyle + '">' + (minLatency !== null ? minLatency + ' ms' : 'N/A') + '</td></tr>' +
+    '<tr style="' + trAltStyle + '"><td style="' + tdStyle + 'color:#555;">最大延遲</td><td style="' + tdStyle + '">' + (maxLatency !== null ? maxLatency + ' ms' : 'N/A') + '</td></tr>' +
+    '</table>';
+
+  var dashboardHtml = dashboardUrl
+    ? '<hr style="margin:24px 0;border:none;border-top:1px solid #e0e0e0;">' +
+      '<p style="font-size:13px;">&#x1F517; Dashboard: <a href="' + escapeHtml_(dashboardUrl) + '">' + escapeHtml_(dashboardUrl) + '</a></p>'
+    : '';
+
+  var htmlBody =
+    '<div style="font-family:Arial,sans-serif;width:90%;max-width:90%;margin:0 auto;color:#202124;">' +
+    '<h2 style="color:#1a73e8;border-bottom:2px solid #1a73e8;padding-bottom:8px;">&#x1F4CB; 官網主機安全監控完整報告</h2>' +
+    '<p style="font-size:13px;color:#555;"><strong>監控站：</strong>' + escapeHtml_(monitorLabel) + '&nbsp;&nbsp;' +
+    '<strong>報告時間：</strong>' + escapeHtml_(at) + '&nbsp;&nbsp;' +
+    '<strong>狀態：</strong><span style="color:' + (issues.length > 0 ? '#d93025' : '#188038') + ';font-weight:700;">' + statusLabel + '</span></p>' +
+    svcTableHtml + secTableHtml + portTableHtml + statsHtml + dashboardHtml +
+    '</div>';
+
+  // Plain text 備援
+  var plain = ['官網主機安全監控完整報告', 'Monitor: ' + monitorLabel, '時間: ' + at, 'Status: ' + statusLabel, '',
+    '=== 服務狀態 ==='].concat(
+    services.map(function(s) {
+      var portData = portMap[String(s.name || '')];
+      var ports = portData && portData.open_ports && portData.open_ports.length ? portData.open_ports.join(',') : '-';
+      return '- ' + s.name + ' | ' + String(s.last_status || 'UNKNOWN') + ' | HTTP ' + String(s.last_http_code || '-') +
+        ' | ' + String(s.last_latency_ms || '-') + 'ms | Ports:' + ports;
+    })
+  ).concat(['', '=== 安全性掃描 ==='])
+  .concat(Object.keys(secMap).map(function(k) {
+    var sc = secMap[k];
+    return '- ' + k + ' | Grade:' + (sc.grade || '-') + ' | HTTPS:' + (sc.is_https ? 'Yes' : 'No') +
+      ' | Critical:' + (sc.critical_count || 0) + ' High:' + (sc.high_count || 0);
+  }))
+  .concat(['', '=== 統計 ===',
+    '可用率: ' + availabilityRate + '%',
+    '平均延遲: ' + (avgLatency !== null ? avgLatency + ' ms' : 'N/A'),
+    'P95: ' + (p95Latency !== null ? p95Latency + ' ms' : 'N/A')
+  ]).join('\n');
+
+  var dateOnly = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+  var subject = '官網主機安全監控完整報告 ' + dateOnly;
+  var mailResult = { channel: 'mail', sent: true, target_count: recipients.length };
+  try {
+    GmailApp.sendEmail(recipients.join(','), subject, plain, { htmlBody: htmlBody });
+  } catch (err) {
+    mailResult = { channel: 'mail', sent: false, error: String(err) };
+  }
+
+  return {
+    ok: mailResult.sent,
+    sent: mailResult.sent,
+    recipients: recipients.join(', '),
+    channels: [mailResult],
+    error: mailResult.sent ? '' : (mailResult.error || 'Send failed')
+  };
+}
+
 function sendStatusReportNow_() {
   const cfg = getReportConfig_();
   return sendStatusReport_(cfg, true, new Date());
@@ -3847,6 +4242,13 @@ function captureDashboardUrlFromPayload_(body) {
 
 function getDashboardUrl_() {
   return String(PropertiesService.getScriptProperties().getProperty(PROP_DASHBOARD_URL) || "").trim();
+}
+
+function getAdminPageUrl_() {
+  var dashUrl = getDashboardUrl_();
+  if (!dashUrl) return '';
+  // e.g. http://host/Monitor/index.html -> http://host/Monitor/admin.html
+  return dashUrl.replace(/\/[^\/]*$/, '/admin.html');
 }
 
 function normalizeDashboardUrl_(raw) {

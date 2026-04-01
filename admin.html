@@ -45,6 +45,7 @@
         <div class="row-actions">
           <button id="startPortScanBtn" class="btn secondary" type="button">開始掃描 Port</button>
           <button id="sendReportNowBtn" class="btn secondary" type="button">立即發送報表</button>
+          <button id="sendFullReportBtn" class="btn secondary" type="button">發送完整報告</button>
           <button id="reloadReportBtn" class="btn" type="button">重新載入</button>
         </div>
       </div>
@@ -152,6 +153,7 @@
               <th>HTTPS</th>
               <th>掃描時間</th>
               <th>Probe</th>
+              <th>詳情</th>
             </tr>
           </thead>
           <tbody id="adminSecurityScansBody"></tbody>
@@ -181,6 +183,17 @@
           <input name="date_manual" type="date" />
         </label>
         <button id="deleteTestDataSubmitBtn" class="btn danger" type="submit">刪除該日測試資料</button>
+      </form>
+      <form id="deleteTestDataRangeForm" class="test-data-grid" style="margin-top:10px;">
+        <label>
+          起始日期
+          <input id="deleteRangeFrom" name="date_from" type="date" />
+        </label>
+        <label>
+          結束日期
+          <input id="deleteRangeTo" name="date_to" type="date" />
+        </label>
+        <button id="deleteTestDataRangeBtn" class="btn danger" type="submit">刪除區間測試資料</button>
       </form>
       <div id="deleteProgressWrap" class="hidden" style="margin-top:10px;">
         <div class="loading-text">
@@ -305,6 +318,20 @@
   <footer class="page-footer">
     <small>Copyright © 2026 Server Monitor. All rights reserved.</small>
   </footer>
+
+  <!-- Security Scan Detail Modal -->
+  <div id="secDetailModal" class="service-modal hidden" aria-hidden="true" role="dialog" aria-labelledby="secDetailTitle">
+    <div class="service-modal-dialog">
+      <div class="service-modal-header">
+        <div>
+          <h2 class="service-modal-header-title" id="secDetailTitle">安全性掃描詳情</h2>
+          <p class="service-modal-subtitle" id="secDetailSubtitle"></p>
+        </div>
+        <button id="secDetailClose" class="service-modal-close" aria-label="關閉">✕</button>
+      </div>
+      <div class="service-modal-body" id="secDetailBody"></div>
+    </div>
+  </div>
 
   <script type="module" src="./assets/admin.js?v=20260316-a068"></script>
 </body>
