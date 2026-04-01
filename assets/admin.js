@@ -13,6 +13,7 @@ const reportForm = document.getElementById('reportForm');
 const reportMessage = document.getElementById('reportMessage');
 const reloadReportBtn = document.getElementById('reloadReportBtn');
 const sendReportNowBtn = document.getElementById('sendReportNowBtn');
+const sendFullReportBtn = document.getElementById('sendFullReportBtn');
 const portScanConfigForm = document.getElementById('portScanConfigForm');
 const portScanConfigMessage = document.getElementById('portScanConfigMessage');
 const portScanRequestLog = document.getElementById('portScanRequestLog');
@@ -31,6 +32,11 @@ const deleteProgressPct = document.getElementById('deleteProgressPct');
 const lineUserStats = document.getElementById('lineUserStats');
 const adminSecurityScansBody = document.getElementById('adminSecurityScansBody');
 const securityScanMessage = document.getElementById('securityScanMessage');
+const secDetailModal = document.getElementById('secDetailModal');
+const secDetailClose = document.getElementById('secDetailClose');
+const secDetailTitle = document.getElementById('secDetailTitle');
+const secDetailSubtitle = document.getElementById('secDetailSubtitle');
+const secDetailBody = document.getElementById('secDetailBody');
 const triggerSecurityScanBtn = document.getElementById('triggerSecurityScanBtn');
 const securityScanRequestLog = document.getElementById('securityScanRequestLog');
 const loadingOverlay = document.getElementById('loadingOverlay');
@@ -492,10 +498,14 @@ async function loadSecurityScans(onProgress) {
   return scans;
 }
 
+// 安全性掃描快取，供 modal 查找
+let _securityScansCache = [];
+
 function renderAdminSecurityScans(scans) {
   if (!adminSecurityScansBody) return;
+  _securityScansCache = scans || [];
   if (!scans || !scans.length) {
-    adminSecurityScansBody.innerHTML = '<tr><td colspan="7">尚無安全性掃描資料</td></tr>';
+    adminSecurityScansBody.innerHTML = '<tr><td colspan="8">尚無安全性掃描資料</td></tr>';
     return;
   }
   adminSecurityScansBody.innerHTML = scans.map((scan) => {
@@ -507,6 +517,7 @@ function renderAdminSecurityScans(scans) {
     const httpsStyle = scan.is_https ? 'color:#22c55e' : 'color:#ef4444';
     const scannedAt = fmtDate(scan.scanned_at);
     const probeId = escapeHtmlText(safeText(scan.probe_id || '-'));
+    const serviceId = escapeAttr(safeText(scan.service_id || scan.service_name || ''));
     return `
       <tr>
         <td data-label="服務名稱">${name}</td>
@@ -516,9 +527,183 @@ function renderAdminSecurityScans(scans) {
         <td data-label="HTTPS"><span style="${httpsStyle};font-weight:600">${isHttps}</span></td>
         <td data-label="掃描時間">${escapeHtmlText(scannedAt)}</td>
         <td data-label="Probe">${probeId}</td>
+        <td data-label="詳情"><button class="btn tiny secondary sec-detail-btn" data-sid="${serviceId}">詳情</button></td>
       </tr>`;
   }).join('');
+
+  // 頁面載入後若 hash 符合，自動開啟對應詳情
+  tryOpenSecDetailFromHash();
 }
+
+function setSecDetailModalVisible(show) {
+  if (!secDetailModal) return;
+  secDetailModal.classList.toggle('hidden', !show);
+  secDetailModal.setAttribute('aria-hidden', show ? 'false' : 'true');
+  document.body.classList.toggle('modal-open', show);
+  if (show && secDetailClose) window.requestAnimationFrame(() => secDetailClose.focus());
+}
+
+function showSecurityScanDetail(scan) {
+  if (!scan) return;
+  const grade = String(scan.grade || '-').toUpperCase();
+  const gradeColor = grade === 'A' ? '#22c55e' : grade === 'B' ? '#84cc16' : grade === 'C' ? '#eab308' : grade === 'D' ? '#f97316' : grade === 'F' ? '#ef4444' : '#94a3b8';
+  if (secDetailTitle) secDetailTitle.textContent = `安全性掃描詳情 — ${safeText(scan.service_name || scan.service_id || '-')}`;
+  if (secDetailSubtitle) secDetailSubtitle.textContent = `${safeText(scan.host || scan.url || '')}  掃描時間: ${fmtDate(scan.scanned_at)}`;
+
+  let details = null;
+  try { details = JSON.parse(scan.details_json || 'null'); } catch (_) {}
+
+  const sevColor = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e', pass: '#94a3b8', info: '#3b82f6', error: '#ef4444' };
+  const sevLabel = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', pass: 'Pass', info: 'Info', error: 'Error' };
+
+  // 摘要 stat 卡
+  const statsHtml = `
+    <div class="service-modal-summary-grid">
+      <div class="service-modal-stat">
+        <span class="service-modal-stat-label">評級</span>
+        <span class="service-modal-stat-value" style="font-size:1.6rem;font-weight:700;color:${gradeColor}">${escapeHtmlText(grade)}</span>
+      </div>
+      <div class="service-modal-stat">
+        <span class="service-modal-stat-label">HTTPS</span>
+        <span class="service-modal-stat-value" style="color:${scan.is_https ? '#22c55e' : '#ef4444'};font-weight:700">${scan.is_https ? '✓ 是' : '✗ 否'}</span>
+      </div>
+      <div class="service-modal-stat">
+        <span class="service-modal-stat-label">問題總數</span>
+        <span class="service-modal-stat-value" style="font-weight:700">${Number(scan.total_issues || 0)}</span>
+        <span class="service-modal-stat-detail">Critical ${scan.critical_count || 0} / High ${scan.high_count || 0} / Medium ${scan.medium_count || 0} / Low ${scan.low_count || 0}</span>
+      </div>
+      <div class="service-modal-stat">
+        <span class="service-modal-stat-label">通過項目</span>
+        <span class="service-modal-stat-value" style="color:#22c55e;font-weight:700">${scan.pass_count || 0}</span>
+      </div>
+    </div>`;
+
+  // TLS 區塊
+  let tlsHtml = '';
+  if (details && details.tls) {
+    const tls = details.tls;
+    const tlsColor = sevColor[tls.severity] || '#555';
+    const expiredStyle = tls.cert_expired ? 'color:#ef4444;font-weight:700' : '';
+    tlsHtml = `
+      <div class="service-modal-section">
+        <div class="service-modal-section-head">
+          <h3>🔒 SSL / TLS 憑證</h3>
+          <span class="service-modal-chip" style="color:${tlsColor}">${sevLabel[tls.severity] || tls.severity || '-'}</span>
+        </div>
+        <div class="service-modal-meta-grid">
+          <div class="service-modal-meta-item"><span class="service-modal-meta-label">Protocol</span><span class="service-modal-meta-value" style="color:${tlsColor};font-weight:700">${escapeHtmlText(tls.protocol || '-')}</span></div>
+          <div class="service-modal-meta-item"><span class="service-modal-meta-label">Cipher</span><span class="service-modal-meta-value">${escapeHtmlText(tls.cipher || '-')}</span></div>
+          <div class="service-modal-meta-item"><span class="service-modal-meta-label">憑證主體 (Subject)</span><span class="service-modal-meta-value">${escapeHtmlText(tls.cert_subject || '-')}</span></div>
+          <div class="service-modal-meta-item"><span class="service-modal-meta-label">頒發者 (Issuer)</span><span class="service-modal-meta-value">${escapeHtmlText(tls.cert_issuer || '-')}</span></div>
+          <div class="service-modal-meta-item"><span class="service-modal-meta-label">有效期至</span><span class="service-modal-meta-value" style="${expiredStyle}">${escapeHtmlText(String(tls.cert_valid_to || '-'))} ${tls.cert_days_remaining !== undefined ? `(${tls.cert_days_remaining} 天)` : ''}</span></div>
+          <div class="service-modal-meta-item"><span class="service-modal-meta-label">自簽憑證</span><span class="service-modal-meta-value" style="${tls.cert_self_signed ? 'color:#f97316' : 'color:#22c55e'}">${tls.cert_self_signed ? '⚠ 是' : '✓ 否'}</span></div>
+        </div>
+      </div>`;
+  }
+
+  // Security Headers 區塊
+  let headersHtml = '';
+  if (details && details.headers && details.headers.length) {
+    const rows = details.headers.map((h) => {
+      const sev = String(h.severity || 'pass').toLowerCase();
+      const color = sevColor[sev] || '#555';
+      const lbl = sevLabel[sev] || sev;
+      return `<tr>
+        <td>${escapeHtmlText(h.check || h.header || '-')}</td>
+        <td><span style="color:${color};font-weight:600">${lbl}</span></td>
+        <td>${escapeHtmlText(h.description || (h.present ? h.value : '-'))}</td>
+      </tr>`;
+    }).join('');
+    headersHtml = `
+      <div class="service-modal-section">
+        <h3>📋 Security Headers</h3>
+        <div class="service-modal-table-wrap">
+          <table class="service-modal-table">
+            <thead><tr><th>Header</th><th>結果</th><th>說明</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  // Sensitive Paths 區塊
+  let pathsHtml = '';
+  if (details && details.paths && details.paths.length) {
+    const rows = details.paths.map((p) => {
+      const sev = String(p.severity || 'pass').toLowerCase();
+      const color = sev === 'pass' ? '#22c55e' : (sevColor[sev] || '#555');
+      const lbl = sev === 'pass' ? '✓ 安全' : `⚠ ${sevLabel[sev] || sev}`;
+      return `<tr>
+        <td>${escapeHtmlText(p.label || p.path || '-')}</td>
+        <td style="font-family:monospace">${p.status_code || '-'}</td>
+        <td style="color:${color};font-weight:600">${lbl}</td>
+        <td>${escapeHtmlText(p.description || '-')}</td>
+      </tr>`;
+    }).join('');
+    pathsHtml = `
+      <div class="service-modal-section">
+        <h3>🔎 敏感路徑</h3>
+        <div class="service-modal-table-wrap">
+          <table class="service-modal-table">
+            <thead><tr><th>路徑</th><th>HTTP</th><th>狀態</th><th>說明</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  if (secDetailBody) secDetailBody.innerHTML = statsHtml + tlsHtml + headersHtml + pathsHtml;
+  setSecDetailModalVisible(true);
+}
+
+function tryOpenSecDetailFromHash() {
+  const hash = window.location.hash;
+  const m = hash.match(/^#sec-(.+)$/);
+  if (!m) return;
+  const sid = decodeURIComponent(m[1]);
+  const scan = _securityScansCache.find((s) =>
+    s.service_id === sid || s.service_name === sid
+  );
+  if (scan) showSecurityScanDetail(scan);
+}
+
+// 詳情按鈕 delegate
+if (adminSecurityScansBody) {
+  adminSecurityScansBody.addEventListener('click', (e) => {
+    const btn = e.target.closest('.sec-detail-btn');
+    if (!btn) return;
+    const sid = btn.dataset.sid || '';
+    const scan = _securityScansCache.find((s) =>
+      s.service_id === sid || s.service_name === sid
+    );
+    if (scan) {
+      window.history.replaceState(null, '', `#sec-${encodeURIComponent(sid)}`);
+      showSecurityScanDetail(scan);
+    }
+  });
+}
+
+// modal 關閉
+if (secDetailClose) {
+  secDetailClose.addEventListener('click', () => {
+    setSecDetailModalVisible(false);
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  });
+}
+if (secDetailModal) {
+  secDetailModal.addEventListener('click', (e) => {
+    if (e.target === secDetailModal) {
+      setSecDetailModalVisible(false);
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  });
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && secDetailModal && !secDetailModal.classList.contains('hidden')) {
+    setSecDetailModalVisible(false);
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+});
 
 function resetAddFormDefaults() {
   if (!addForm) return;
@@ -1126,6 +1311,27 @@ async function handleSendReportNow() {
   }
 }
 
+async function handleSendFullReport() {
+  if (!reportForm) return;
+  const recipients = reportForm.elements.recipients.value.trim();
+  if (!recipients) {
+    reportMessage.textContent = '請先填寫 Mail 收件人。';
+    return;
+  }
+  reportMessage.textContent = '正在發送完整報告...';
+  if (sendFullReportBtn) sendFullReportBtn.disabled = true;
+  try {
+    const res = await apiPost({ action: 'sendFullReport', recipients });
+    if (!res.ok) throw new Error(res.error || 'sendFullReport failed');
+    const to = safeText(res.recipients || recipients);
+    reportMessage.textContent = `完整報告已發送至 ${to}。`;
+  } catch (err) {
+    reportMessage.textContent = `發送失敗：${safeText(err.message)}`;
+  } finally {
+    if (sendFullReportBtn) sendFullReportBtn.disabled = false;
+  }
+}
+
 function applyPortScanConfig(cfg) {
   if (!portScanConfigForm) return;
   portScanConfigForm.elements.enabled.checked = String(cfg?.enabled).toLowerCase() === 'true' || cfg?.enabled === true;
@@ -1317,6 +1523,11 @@ async function loadChecksDates(forceRefresh, onProgress) {
     if (typeof onProgress === 'function') onProgress(100);
   }
 }
+
+const deleteTestDataRangeForm = document.getElementById('deleteTestDataRangeForm');
+const deleteRangeFrom = document.getElementById('deleteRangeFrom');
+const deleteRangeTo   = document.getElementById('deleteRangeTo');
+const deleteTestDataRangeBtn = document.getElementById('deleteTestDataRangeBtn');
 
 async function handleDeleteTestData(event) {
   event.preventDefault();
@@ -1578,6 +1789,7 @@ if (adminBody) adminBody.addEventListener('click', handleTableClick);
 if (reportForm) reportForm.addEventListener('submit', handleSaveReport);
 if (reloadReportBtn) reloadReportBtn.addEventListener('click', handleReloadReportWithOverlay);
 if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendReportNow);
+if (sendFullReportBtn) sendFullReportBtn.addEventListener('click', handleSendFullReport);
 if (portScanConfigForm) portScanConfigForm.addEventListener('submit', handleSavePortScanConfig);
 if (reloadPortScanConfigBtn) reloadPortScanConfigBtn.addEventListener('click', handleReloadPortScanConfigWithOverlay);
 if (triggerPortScanBtn) triggerPortScanBtn.addEventListener('click', handleRequestPortScanWithOverlay);
@@ -1606,7 +1818,37 @@ if (clearSecurityScansBtn) clearSecurityScansBtn.addEventListener('click', async
   }
 });
 
+async function handleDeleteTestDataRange(event) {
+  event.preventDefault();
+  const dateFrom = (deleteRangeFrom?.value || '').trim();
+  const dateTo   = (deleteRangeTo?.value   || '').trim();
+  if (!dateFrom || !dateTo) {
+    if (deleteTestDataMessage) deleteTestDataMessage.textContent = '請填寫起始日期與結束日期。';
+    return;
+  }
+  if (dateFrom > dateTo) {
+    if (deleteTestDataMessage) deleteTestDataMessage.textContent = '起始日期不能晚於結束日期。';
+    return;
+  }
+  const confirmed = window.confirm(`確定刪除 ${dateFrom} ~ ${dateTo} 的測試資料？`);
+  if (!confirmed) return;
+
+  startDeleteProgress();
+  try {
+    const res = await apiPost({ action: 'deleteTestDataByDateRange', date_from: dateFrom, date_to: dateTo }, 300000);
+    if (!res.ok) throw new Error(res.error || 'deleteTestDataByDateRange failed');
+    finishDeleteProgress(true);
+    if (deleteTestDataMessage) deleteTestDataMessage.textContent = `已刪除 ${Number(res.data?.deleted_count || 0)} 筆（${dateFrom} ~ ${dateTo}）。`;
+    clearChecksDatesCache();
+    await loadChecksDates(true);
+  } catch (err) {
+    finishDeleteProgress(false);
+    if (deleteTestDataMessage) deleteTestDataMessage.textContent = `刪除失敗：${safeText(err.message)}`;
+  }
+}
+
 if (deleteTestDataForm) deleteTestDataForm.addEventListener('submit', handleDeleteTestData);
+if (deleteTestDataRangeForm) deleteTestDataRangeForm.addEventListener('submit', handleDeleteTestDataRange);
 if (reloadDeleteDatesBtn) reloadDeleteDatesBtn.addEventListener('click', handleReloadDeleteDatesWithOverlay);
 
 async function initFirstLoad() {
