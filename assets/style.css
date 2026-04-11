@@ -2697,3 +2697,339 @@ label {
     white-space: normal;
   }
 }
+
+@media (max-width: 640px) {
+  .page-dashboard .topbar,
+  .page-dashboard .container,
+  .page-dashboard .page-footer {
+    width: calc(100vw - 16px);
+  }
+
+  .page-dashboard .brand-lockup {
+    width: 100%;
+    align-items: flex-start;
+  }
+
+  .page-dashboard .brand-copy {
+    flex: 1 1 auto;
+  }
+
+  .page-dashboard .brand-copy h1 {
+    font-size: 1.38rem;
+    line-height: 1.05;
+  }
+
+  .page-dashboard .topbar p {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .page-dashboard .host-badge {
+    max-width: 100%;
+    word-break: break-word;
+  }
+
+  .page-dashboard .panel {
+    padding: 14px;
+  }
+
+  .page-dashboard .section-title {
+    align-items: flex-start;
+  }
+
+  .page-dashboard .section-title .title-text {
+    line-height: 1.3;
+  }
+
+  .page-dashboard .panel-header .row-actions,
+  .page-dashboard .history-footer .row-actions,
+  .page-dashboard .latency-filters {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 8px;
+    width: 100%;
+    align-items: center;
+    padding-bottom: 2px;
+    scrollbar-width: thin;
+  }
+
+  .page-dashboard .panel-header .row-actions > *,
+  .page-dashboard .history-footer .row-actions > *,
+  .page-dashboard .latency-filters > * {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .page-dashboard .panel-header .row-actions > .hint,
+  .page-dashboard .panel-header .row-actions > .inline-field {
+    font-size: 0.76rem;
+    white-space: nowrap;
+  }
+
+  .page-dashboard .container > .panel:nth-of-type(2) .panel-header .row-actions {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    overflow: visible;
+    align-items: center;
+  }
+
+  .page-dashboard .container > .panel:nth-of-type(2) .panel-header .row-actions > .inline-field {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .page-dashboard .container > .panel:nth-of-type(2) .panel-header .row-actions > #refreshIntervalSelect {
+    grid-column: 2;
+    grid-row: 1;
+    width: 100%;
+  }
+
+  .page-dashboard .container > .panel:nth-of-type(2) .panel-header .row-actions > #autoRefreshInfo {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    white-space: normal;
+  }
+
+  .page-dashboard #refreshBtn {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    width: 100%;
+    min-width: 0;
+    white-space: normal;
+    word-break: keep-all;
+    line-height: 1.2;
+    text-align: center;
+  }
+
+  .page-dashboard .latency-filters > #hoursSelect {
+    width: 96px;
+  }
+
+  .page-dashboard .latency-filters > #latencyRangeStart,
+  .page-dashboard .latency-filters > #latencyRangeEnd {
+    width: 176px;
+  }
+
+  .page-dashboard .panel .table-wrap {
+    overflow: visible;
+  }
+
+  .page-dashboard .panel .table-wrap > table,
+  .page-dashboard .panel .table-wrap > table tbody,
+  .page-dashboard .panel .table-wrap > table tr,
+  .page-dashboard .panel .table-wrap > table td {
+    display: block;
+    width: 100%;
+  }
+
+  .page-dashboard .panel .table-wrap > table {
+    min-width: 0 !important;
+  }
+
+  .page-dashboard .panel .table-wrap > table thead {
+    display: none;
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 12px;
+    row-gap: 8px;
+    margin-bottom: 10px;
+    padding: 12px;
+    border: 1px solid rgba(35, 58, 94, 0.12);
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 6px 16px rgba(50, 64, 91, 0.08);
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody tr:hover {
+    background: #fff;
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody tr.selected-row {
+    background: #ecf7ff;
+    border-color: rgba(76, 133, 193, 0.34);
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody td {
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody td + td {
+    border-top: 0;
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody td[data-label=""]::before,
+  .page-dashboard .panel .table-wrap > table tbody td:not([data-label])::before {
+    display: none;
+  }
+
+  .page-dashboard .service-name-with-dot {
+    align-items: flex-start;
+  }
+
+  .page-dashboard #servicesBody td:nth-child(4),
+  .page-dashboard #servicesBody td:nth-child(7),
+  .page-dashboard #servicesBody td:nth-child(8),
+  .page-dashboard #portScansBody td:nth-child(3),
+  .page-dashboard #portScansBody td:nth-child(6),
+  .page-dashboard #securityScansBody td:nth-child(2),
+  .page-dashboard #securityScansBody td:nth-child(5),
+  .page-dashboard #securityScansBody td:nth-child(6),
+  .page-dashboard #securityScansBody td:nth-child(7),
+  .page-dashboard #securityScansBody td:nth-child(8),
+  .page-dashboard #securityScansBody td:nth-child(10),
+  .page-dashboard #minuteHistoryBody td:nth-child(5) {
+    display: none !important;
+  }
+
+  .page-dashboard #servicesBody td:nth-child(1),
+  .page-dashboard #servicesBody td:nth-child(2),
+  .page-dashboard #servicesBody td:nth-child(9),
+  .page-dashboard #securityScansBody td:nth-child(1),
+  .page-dashboard #securityScansBody td:nth-child(11),
+  .page-dashboard #minuteHistoryBody td:nth-child(1) {
+    grid-column: 1 / -1;
+  }
+
+  .page-dashboard #servicesBody td:nth-child(2)::before {
+    display: none;
+  }
+
+  .page-dashboard #servicesBody td:nth-child(2) .url-ellipsis {
+    display: none;
+  }
+
+  .page-dashboard #servicesBody td:nth-child(2) .service-check-mode-line {
+    margin-top: 0;
+    gap: 4px;
+  }
+
+  .page-dashboard #servicesBody td:nth-child(2) .service-check-mode-detail {
+    display: none;
+  }
+
+  .page-dashboard .url-ellipsis,
+  .page-dashboard .port-scan-value {
+    max-width: none;
+    white-space: normal;
+    word-break: break-word;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody td .btn {
+    width: 100%;
+  }
+
+  .page-dashboard .summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .page-dashboard .summary-grid .metric {
+    padding: 8px 6px;
+    border-radius: 10px;
+  }
+
+  .page-dashboard .summary-grid .metric p {
+    margin-bottom: 2px;
+    font-size: 0.64rem;
+    line-height: 1.2;
+  }
+
+  .page-dashboard .summary-grid .metric strong {
+    font-size: 0.94rem;
+  }
+
+  .page-dashboard .summary-grid .metric-range-value {
+    font-size: 0.66rem;
+    line-height: 1.2;
+  }
+
+  .page-dashboard #latencyChart,
+  .page-dashboard #uptimeChart,
+  .page-dashboard #allLatencyChart {
+    min-height: 180px;
+    max-height: 220px;
+  }
+}
+
+@media (max-width: 480px) {
+  .page-dashboard .topbar {
+    padding: 12px 14px;
+  }
+
+  .page-dashboard .brand-lockup {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .page-dashboard nav a {
+    flex: 1 1 calc(50% - 6px);
+  }
+
+  .page-dashboard .summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .page-dashboard .panel {
+    padding: 12px;
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody tr {
+    padding: 10px;
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody td::before {
+    font-size: 0.7rem;
+  }
+
+  .page-dashboard .panel .table-wrap > table tbody tr {
+    column-gap: 10px;
+    row-gap: 7px;
+  }
+
+  .page-dashboard .summary-grid .metric {
+    padding: 7px 5px;
+  }
+
+  .page-dashboard .summary-grid .metric p {
+    font-size: 0.58rem;
+  }
+
+  .page-dashboard .summary-grid .metric strong {
+    font-size: 0.86rem;
+  }
+
+  .page-dashboard .summary-grid .metric-range-value {
+    font-size: 0.6rem;
+  }
+
+  .page-dashboard #latencyChart,
+  .page-dashboard #uptimeChart,
+  .page-dashboard #allLatencyChart {
+    min-height: 160px;
+    max-height: 200px;
+  }
+}
