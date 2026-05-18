@@ -1131,7 +1131,10 @@ async function runGlobalPortScan(services, options = {}) {
       total_count: hostScan.totalCount
     });
     if (!writeResponse || !writeResponse.ok) {
-      throw new Error(writeResponse && writeResponse.error ? writeResponse.error : `updatePortScan failed for ${serviceName}`);
+      const writeErr = writeResponse && writeResponse.error ? writeResponse.error : `updatePortScan failed for ${serviceName}`;
+      await log(`[PORT_SCAN_AUTO] write_failed service=${serviceName}: ${writeErr}`, "error");
+      scanResults.push({ ok: false, serviceId, serviceName, error: writeErr });
+      continue;
     }
 
     scanResults.push({

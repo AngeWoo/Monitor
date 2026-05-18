@@ -1838,9 +1838,9 @@ function normalizePortScanSession_(session) {
           at: String(line && line.at || "").trim(),
           level: String(line && line.level || "info").trim() || "info",
           probe_id: String(line && line.probe_id || "").trim(),
-          message: String(line && line.message || "").trim()
+          message: String(line && line.message || "").trim().slice(0, 200)
         };
-      }).filter(function(line) { return !!line.message; }).slice(-120)
+      }).filter(function(line) { return !!line.message; }).slice(-40)
     : [];
   return normalized;
 }
@@ -1853,11 +1853,11 @@ function appendPortScanSessionLogUnsafe_(session, entry) {
     at: String(entry && entry.at || new Date().toISOString()).trim(),
     level: String(entry && entry.level || "info").trim() || "info",
     probe_id: String(entry && entry.probe_id || "").trim(),
-    message: String(entry && entry.message || "").trim()
+    message: String(entry && entry.message || "").trim().slice(0, 200)
   });
   session.log_lines = session.log_lines.filter(function(line) {
     return !!String(line && line.message || "").trim();
-  }).slice(-120);
+  }).slice(-40);
 }
 
 /**
@@ -1902,15 +1902,15 @@ function updatePortScan_(payload) {
         if (idx.service_id !== undefined) sh.getRange(rowNum, idx.service_id + 1).setValue(serviceId);
         if (idx.service_name !== undefined) sh.getRange(rowNum, idx.service_name + 1).setValue(serviceName);
         if (idx.probe_id !== undefined) sh.getRange(rowNum, idx.probe_id + 1).setValue(probeId);
-        sh.getRange(rowNum, idx.host       + 1).setValue(host);
+        if (idx.host !== undefined) sh.getRange(rowNum, idx.host + 1).setValue(host);
         if (idx.open_ports !== undefined) {
           var openPortsRange = sh.getRange(rowNum, idx.open_ports + 1);
           openPortsRange.setNumberFormat("@");
           openPortsRange.setValue(openPorts);
         }
-        sh.getRange(rowNum, idx.scanned_at + 1).setValue(scannedAt);
-        sh.getRange(rowNum, idx.open_count + 1).setValue(openCount);
-        sh.getRange(rowNum, idx.total_count+ 1).setValue(totalCount);
+        if (idx.scanned_at !== undefined) sh.getRange(rowNum, idx.scanned_at + 1).setValue(scannedAt);
+        if (idx.open_count !== undefined) sh.getRange(rowNum, idx.open_count + 1).setValue(openCount);
+        if (idx.total_count !== undefined) sh.getRange(rowNum, idx.total_count + 1).setValue(totalCount);
         invalidateServicesCache_();
         return { ok: true, updated: true, row_num: rowNum, device_name: deviceName, sheet_name: SHEET_PORT_SCANS };
       }
@@ -2272,8 +2272,8 @@ function normalizeSecurityScanSession_(session) {
   n.error         = String(n.error         || '').trim();
   n.log_lines = Array.isArray(n.log_lines)
     ? n.log_lines.map(function(l) {
-        return { at: String(l&&l.at||'').trim(), level: String(l&&l.level||'info').trim()||'info', probe_id: String(l&&l.probe_id||'').trim(), message: String(l&&l.message||'').trim() };
-      }).filter(function(l) { return !!l.message; }).slice(-120)
+        return { at: String(l&&l.at||'').trim(), level: String(l&&l.level||'info').trim()||'info', probe_id: String(l&&l.probe_id||'').trim(), message: String(l&&l.message||'').trim().slice(0, 200) };
+      }).filter(function(l) { return !!l.message; }).slice(-40)
     : [];
   return n;
 }
