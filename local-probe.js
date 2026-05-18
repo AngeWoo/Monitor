@@ -1173,7 +1173,13 @@ async function runClaimedPortScanSession(session) {
   let services = Array.isArray(listResponse.data)
     ? listResponse.data.filter((item) => toBool(item && item.enabled))
     : [];
-  const ports = parsePortList(portsRaw);
+  let ports = parsePortList(portsRaw);
+  if (!ports.length) {
+    try {
+      const cfg = await getPortScanConfig();
+      ports = parsePortList(cfg.ports || "");
+    } catch (_) {}
+  }
   const summaryPrefix = `[PORT_SCAN_REQUEST] request=${requestId}`;
   const scopeLabel = requestedServiceId
     ? `service=${requestedServiceName || requestedServiceId}`
@@ -2038,13 +2044,22 @@ $intervalTimer.Add_Tick({
 })
 $signalTimer.Add_Tick({
   try {
-    # Admin-signal polling (always active)
     if (-not $script:isProbeRunning -and -not $script:isPortScanRunning) {
       Start-RequestedPortScan
-      if (-not $script:isPortScanRunning) { Start-RequestedSecurityScan }
     }
   } catch {
-    Append-Log('[SIGNAL] 輪詢例外: ' + $_.Exception.Message)
+    Append-Log('[SIGNAL] Port scan 輪詢例外: ' + $_.Exception.Message)
+  }
+})
+$securitySignalTimer = New-Object System.Windows.Forms.Timer
+$securitySignalTimer.Interval = 7000
+$securitySignalTimer.Add_Tick({
+  try {
+    if (-not $script:isProbeRunning -and -not $script:isPortScanRunning) {
+      Start-RequestedSecurityScan
+    }
+  } catch {
+    Append-Log('[SIGNAL] Security scan 輪詢例外: ' + $_.Exception.Message)
   }
 })
 $btnRunOnce.Add_Click({ Start-ProbeRun })
@@ -2069,6 +2084,7 @@ $btnStop.Add_Click({
 $btnClose.Add_Click({
   $intervalTimer.Stop()
   $signalTimer.Stop()
+  $securitySignalTimer.Stop()
   $pollTimer.Stop()
   if ($script:probeProcess -and -not $script:probeProcess.HasExited) {
     try { $script:probeProcess.Kill() } catch {}
@@ -2083,6 +2099,7 @@ $form.Add_Shown({
   Append-Log('Run Once：執行單次監控檢查  |  Start Loop：啟動定時循環')
   Append-Log('安全性掃描與 Port 掃描請由管理頁面觸發，訊號每 5 秒自動輪詢。')
   $signalTimer.Start()
+  $securitySignalTimer.Start()
   Update-Status
 })
 [void]$form.ShowDialog()
