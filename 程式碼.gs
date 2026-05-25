@@ -2275,15 +2275,21 @@ function normalizeSecurityScanSession_(session) {
   n.error         = String(n.error         || '').trim();
   n.log_lines = Array.isArray(n.log_lines)
     ? n.log_lines.map(function(l) {
-        return { at: String(l&&l.at||'').trim(), level: String(l&&l.level||'info').trim()||'info', probe_id: String(l&&l.probe_id||'').trim(), message: String(l&&l.message||'').trim().slice(0, 200) };
-      }).filter(function(l) { return !!l.message; }).slice(-40)
+        return { at: String(l&&l.at||'').trim(), level: String(l&&l.level||'info').trim()||'info', probe_id: String(l&&l.probe_id||'').trim(), message: String(l&&l.message||'').trim().slice(0, 160) };
+      }).filter(function(l) { return !!l.message; }).slice(-24)
     : [];
   return n;
 }
 
 function appendSecurityScanSessionLogUnsafe_(session, entry) {
   if (!Array.isArray(session.log_lines)) session.log_lines = [];
-  session.log_lines.push({ at: String(entry&&entry.at||new Date().toISOString()).trim(), level: String(entry&&entry.level||'info').trim()||'info', probe_id: String(entry&&entry.probe_id||'').trim(), message: String(entry&&entry.message||'').trim() });
+  session.log_lines.push({
+    at: String(entry&&entry.at||new Date().toISOString()).trim(),
+    level: String(entry&&entry.level||'info').trim()||'info',
+    probe_id: String(entry&&entry.probe_id||'').trim(),
+    message: String(entry&&entry.message||'').trim().slice(0, 160)
+  });
+  if (session.log_lines.length > 24) session.log_lines = session.log_lines.slice(-24);
 }
 
 // ── End Security Scan Signal ─────────────────────────────────────────────────

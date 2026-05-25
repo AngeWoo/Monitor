@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const PROBE_SCRIPT_VERSION = "20260331-a007";
+const PROBE_SCRIPT_VERSION = "20260525-a001";
 const DEFAULT_API_BASE = "https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec";
 const DEFAULT_API_REDIRECTS = 5;
 const DEFAULT_CONTROL_INTERVAL_SEC = 60;
@@ -915,47 +915,84 @@ async function runSecurityScanOnce(options = {}) {
     }
   }
 
-  const SCAN_CONCURRENCY = 5;
+  const SCAN_CONCURRENCY = 2;
   await log(`[SECURITY_SCAN] starting scan for ${services.length} service(s), concurrency=${SCAN_CONCURRENCY}`);
   const writeErrors = [];
 
   const scanTasks = services.map((service) => async () => {
-    const result = await runSecurityScanForService(service, log);
+    let result;
+    try {
+      result = await runSecurityScanForService(service, log);
+    } catch (error) {
+      result = {
+        ok: false,
+        service_id: String(service.id || "").trim(),
+        service_name: String(service.name || service.url || "").trim(),
+        error: String(error && error.message ? error.message : error)
+      };
+      await log(`[SECURITY_SCAN] failed service=${service.name || service.id}: ${result.error}`, "error");
+    }
     if (result.ok) {
+      const fullPayload = {
+        action: "updateSecurityScan",
+        probe_id: RUNTIME.probeId,
+        service_id: result.service_id,
+        service_name: result.service_name,
+        url: result.url,
+        host: result.host,
+        scanned_at: result.scanned_at,
+        grade: result.grade,
+        total_issues: result.total_issues,
+        critical_count: result.critical_count,
+        high_count: result.high_count,
+        medium_count: result.medium_count,
+        low_count: result.low_count,
+        pass_count: result.pass_count,
+        is_https: result.is_https,
+        details_json: stringifySecurityScanDetails({
+          tls: result.tls,
+          headers: result.headers,
+          paths: result.paths
+        })
+      };
+      const summaryPayload = {
+        ...fullPayload,
+        details_json: JSON.stringify({
+          details_omitted: true,
+          reason: "Full security scan details write failed; summary columns were retried separately."
+        })
+      };
       try {
-        const writeResponse = await apiPost({
-          action: "updateSecurityScan",
-          probe_id: RUNTIME.probeId,
-          service_id: result.service_id,
-          service_name: result.service_name,
-          url: result.url,
-          host: result.host,
-          scanned_at: result.scanned_at,
-          grade: result.grade,
-          total_issues: result.total_issues,
-          critical_count: result.critical_count,
-          high_count: result.high_count,
-          medium_count: result.medium_count,
-          low_count: result.low_count,
-          pass_count: result.pass_count,
-          is_https: result.is_https,
-          details_json: stringifySecurityScanDetails({
-            tls: result.tls,
-            headers: result.headers,
-            paths: result.paths
-          })
-        });
+        let writeResponse = await apiPost(fullPayload);
         if (!writeResponse.ok) {
-          const message = `${service.name || service.id}: ${writeResponse.error || "updateSecurityScan failed"}`;
-          writeErrors.push(message);
-          await log(`[SECURITY_SCAN] write_failed service=${service.name || service.id}: ${message}`, "error");
+          await log(`[SECURITY_SCAN] full_write_failed service=${service.name || service.id}: ${writeResponse.error || "updateSecurityScan failed"}, retrying summary`, "warn");
+          writeResponse = await apiPost(summaryPayload);
+          if (!writeResponse.ok) {
+            const message = `${service.name || service.id}: ${writeResponse.error || "updateSecurityScan summary retry failed"}`;
+            writeErrors.push(message);
+            await log(`[SECURITY_SCAN] write_failed service=${service.name || service.id}: ${message}`, "error");
+          } else {
+            await log(`[SECURITY_SCAN] write_ok service=${service.name || service.id} summary_only=true details_chars=${writeResponse.details_chars ?? "-"}`);
+          }
         } else {
           await log(`[SECURITY_SCAN] write_ok service=${service.name || service.id} details_chars=${writeResponse.details_chars ?? "-"}`);
         }
       } catch (error) {
-        const message = `${service.name || service.id}: ${error.message || error}`;
-        writeErrors.push(message);
-        await log(`[SECURITY_SCAN] write_failed service=${service.name || service.id}: ${message}`, "error");
+        await log(`[SECURITY_SCAN] full_write_error service=${service.name || service.id}: ${error.message || error}, retrying summary`, "warn");
+        try {
+          const retryResponse = await apiPost(summaryPayload);
+          if (!retryResponse.ok) {
+            const message = `${service.name || service.id}: ${retryResponse.error || "updateSecurityScan summary retry failed"}`;
+            writeErrors.push(message);
+            await log(`[SECURITY_SCAN] write_failed service=${service.name || service.id}: ${message}`, "error");
+          } else {
+            await log(`[SECURITY_SCAN] write_ok service=${service.name || service.id} summary_only=true details_chars=${retryResponse.details_chars ?? "-"}`);
+          }
+        } catch (retryError) {
+          const message = `${service.name || service.id}: ${retryError.message || retryError}`;
+          writeErrors.push(message);
+          await log(`[SECURITY_SCAN] write_failed service=${service.name || service.id}: ${message}`, "error");
+        }
       }
     }
     return result;
