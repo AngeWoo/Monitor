@@ -50,9 +50,10 @@ const DATES_CACHE_TTL_MS = 5 * 60 * 1000;
 const PORT_SCAN_WATCH_INTERVAL_MS = 3000;
 const PORT_SCAN_WATCH_TIMEOUT_MS = 180000;
 const PORT_SCAN_LOG_LIMIT = 60;
-const SECURITY_SCAN_WATCH_INTERVAL_MS = 4000;
+const SECURITY_SCAN_WATCH_INTERVAL_MS = 2000;
 const SECURITY_SCAN_WATCH_TIMEOUT_MS = 300000;
 const SECURITY_SCAN_LOG_LIMIT = 80;
+const SECURITY_SCAN_RESULT_REFRESH_MIN_MS = 2500;
 
 let services = [];
 let probes = [];
@@ -346,6 +347,7 @@ async function watchSecurityScanRequest(meta) {
   let lastLogCount = 0;
   let sawRunning = false;
   let sawCompletion = false;
+  let lastResultRefreshAt = 0;
 
   appendSecurityScanRequestLog(
     onlineProbeCount > 0
@@ -376,6 +378,10 @@ async function watchSecurityScanRequest(meta) {
         }
         lastLogCount = logs.length;
         lastMarker = marker;
+        if (safeText(session.status || '') === 'running' && Date.now() - lastResultRefreshAt >= SECURITY_SCAN_RESULT_REFRESH_MIN_MS) {
+          lastResultRefreshAt = Date.now();
+          await loadSecurityScans({ silent: true }).catch(() => {});
+        }
       } else if (pollRound === 1 || pollRound % 3 === 0) {
         appendSecurityScanRequestLog(`第 ${pollRound} 次輪詢：session 仍在 ${safeText(session.status || 'pending')}。`);
       }
@@ -383,7 +389,7 @@ async function watchSecurityScanRequest(meta) {
       if (safeText(session.status || '') === 'running') sawRunning = true;
       if (safeText(session.status || '') === 'completed' || safeText(session.status || '') === 'failed') {
         sawCompletion = true;
-        await Promise.allSettled([loadSecurityScans(), loadProbes()]);
+        await Promise.allSettled([loadSecurityScans({ silent: true }), loadProbes()]);
         if (session.result_summary) {
           appendSecurityScanRequestLog(session.result_summary, formatSecurityScanSessionTime(session.completed_at));
         }
@@ -484,17 +490,20 @@ async function loadProbes(onProgress) {
 }
 
 async function loadSecurityScans(onProgress) {
-  if (typeof onProgress === 'function') onProgress(12);
+  const opts = typeof onProgress === 'object' && onProgress !== null ? onProgress : {};
+  const progressFn = typeof onProgress === 'function' ? onProgress : null;
+  const silent = !!opts.silent;
+  if (progressFn) progressFn(12);
   const res = await apiGet({ action: 'listSecurityScans' }, 120000).catch(() => ({ ok: false, data: [] }));
-  if (typeof onProgress === 'function') onProgress(72);
+  if (progressFn) progressFn(72);
   const scans = res && res.ok ? (Array.isArray(res.data) ? res.data : []) : [];
   renderAdminSecurityScans(scans);
-  if (securityScanMessage) {
+  if (securityScanMessage && !silent) {
     securityScanMessage.textContent = scans.length
       ? `已載入 ${scans.length} 筆安全性掃描結果。`
       : '尚無安全性掃描資料。請透過 probe --security-scan 執行掃描。';
   }
-  if (typeof onProgress === 'function') onProgress(100);
+  if (progressFn) progressFn(100);
   return scans;
 }
 
@@ -1878,9 +1887,6 @@ async function initFirstLoad() {
 
 resetAddFormDefaults();
 initFirstLoad();
-
-
-
 
 
 
