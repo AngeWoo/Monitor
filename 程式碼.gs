@@ -26,6 +26,9 @@ const SECURITY_SCAN_HEADERS = [
   "critical_count", "high_count", "medium_count", "low_count", "pass_count",
   "is_https", "details_json"
 ];
+const SECURITY_SCAN_DETAILS_MAX_CHARS = 45000;
+const SECURITY_SCAN_DETAIL_STRING_MAX_CHARS = 1200;
+const SECURITY_SCAN_DETAIL_ARRAY_MAX_ITEMS = 120;
 
 const NOTIFY_LOG_HEADERS = [
   "timestamp",
@@ -2289,11 +2292,6 @@ function updateSecurityScan_(payload) {
   var serviceId = String(payload.service_id || '').trim();
   if (!serviceId) return { ok: false, error: 'Missing service_id' };
 
-  var ss = SpreadsheetApp.getActive();
-  var sh = ss.getSheetByName(SHEET_SECURITY_SCANS);
-  if (!sh) { sh = ss.insertSheet(SHEET_SECURITY_SCANS); }
-  ensureHeaders_(sh, SECURITY_SCAN_HEADERS);
-
   var serviceName = String(payload.service_name || '').trim();
   var probeId    = String(payload.probe_id || '').trim();
   var url        = String(payload.url || '').trim();
@@ -2307,7 +2305,7 @@ function updateSecurityScan_(payload) {
   var lowCount   = Number(payload.low_count || 0);
   var passCount  = Number(payload.pass_count || 0);
   var isHttps    = toBool_(payload.is_https);
-  var detailsJson = String(payload.details_json || '').trim();
+  var detailsJson = clampSecurityScanDetailsJson_(payload.details_json);
 
   var rowData = {
     service_id: serviceId,
@@ -2327,28 +2325,89 @@ function updateSecurityScan_(payload) {
     details_json: detailsJson
   };
 
-  var lastRow = sh.getLastRow();
-  if (lastRow >= 2) {
-    var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-    var idx = indexMap_(header);
-    var data = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
-    for (var r = 0; r < data.length; r++) {
-      var rowServiceId = idx.service_id !== undefined ? String(data[r][idx.service_id] || '').trim() : '';
-      if (rowServiceId === serviceId) {
-        var rowNum = r + 2;
-        header.forEach(function(h, c) {
-          if (rowData[h] !== undefined) {
-            sh.getRange(rowNum, c + 1).setValue(rowData[h]);
-          }
-        });
-        return { ok: true, updated: true, row_num: rowNum, service_id: serviceId };
-      }
-    }
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    return { ok: false, error: 'security_scan_write_lock_timeout' };
   }
 
-  var header2 = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-  sh.appendRow(rowFromObj_(header2, rowData));
-  return { ok: true, updated: false, service_id: serviceId };
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sh = ss.getSheetByName(SHEET_SECURITY_SCANS);
+    if (!sh) { sh = ss.insertSheet(SHEET_SECURITY_SCANS); }
+    ensureHeaders_(sh, SECURITY_SCAN_HEADERS);
+
+    var lastRow = sh.getLastRow();
+    if (lastRow >= 2) {
+      var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+      var idx = indexMap_(header);
+      var data = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
+      for (var r = 0; r < data.length; r++) {
+        var rowServiceId = idx.service_id !== undefined ? String(data[r][idx.service_id] || '').trim() : '';
+        var rowProbeId = idx.probe_id !== undefined ? String(data[r][idx.probe_id] || '').trim() : '';
+        if (rowServiceId === serviceId && (!probeId || !rowProbeId || rowProbeId === probeId)) {
+          var rowNum = r + 2;
+          header.forEach(function(h, c) {
+            if (rowData[h] !== undefined) {
+              sh.getRange(rowNum, c + 1).setValue(rowData[h]);
+            }
+          });
+          SpreadsheetApp.flush();
+          return { ok: true, updated: true, row_num: rowNum, service_id: serviceId, details_chars: detailsJson.length };
+        }
+      }
+    }
+
+    var header2 = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    sh.appendRow(rowFromObj_(header2, rowData));
+    SpreadsheetApp.flush();
+    return { ok: true, updated: false, service_id: serviceId, details_chars: detailsJson.length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function clampSecurityScanDetailsJson_(value) {
+  var raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.length <= SECURITY_SCAN_DETAILS_MAX_CHARS) return raw;
+
+  try {
+    var parsed = JSON.parse(raw);
+    var compact = sanitizeSecurityScanDetailValue_(parsed, 0);
+    compact._truncated = true;
+    compact._original_chars = raw.length;
+    var next = JSON.stringify(compact);
+    if (next.length <= SECURITY_SCAN_DETAILS_MAX_CHARS) return next;
+  } catch (_) {}
+
+  return JSON.stringify({
+    _truncated: true,
+    _original_chars: raw.length,
+    message: 'Security scan details exceeded Google Sheets cell limit; summary columns were still saved.'
+  });
+}
+
+function sanitizeSecurityScanDetailValue_(value, depth) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') {
+    return value.length > SECURITY_SCAN_DETAIL_STRING_MAX_CHARS
+      ? value.slice(0, SECURITY_SCAN_DETAIL_STRING_MAX_CHARS) + '... [truncated]'
+      : value;
+  }
+  if (typeof value !== 'object') return value;
+  if (depth > 6) return '[truncated-depth]';
+  if (Array.isArray(value)) {
+    return value.slice(0, SECURITY_SCAN_DETAIL_ARRAY_MAX_ITEMS).map(function(item) {
+      return sanitizeSecurityScanDetailValue_(item, depth + 1);
+    });
+  }
+  var out = {};
+  Object.keys(value).forEach(function(key) {
+    out[key] = sanitizeSecurityScanDetailValue_(value[key], depth + 1);
+  });
+  return out;
 }
 
 function listSecurityScans_() {

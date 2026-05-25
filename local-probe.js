@@ -15,6 +15,9 @@ const DEFAULT_PORT_SCAN_TIMEOUT_MS = 2500;
 const DEFAULT_CONTROL_SCAN_DEVICE_NAME = "所有測試項";
 const DEFAULT_CONTROL_SCAN_HOST = "AUTO";
 const DEFAULT_CONTROL_SCAN_PORTS = "22,80,443,3389";
+const SECURITY_SCAN_DETAILS_MAX_CHARS = 45000;
+const SECURITY_SCAN_DETAIL_STRING_MAX_CHARS = 1200;
+const SECURITY_SCAN_DETAIL_ARRAY_MAX_ITEMS = 120;
 
 function parseCliArgs(argv) {
   const parsed = {
@@ -108,6 +111,41 @@ function toNum(value, fallback) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
+}
+
+function sanitizeSecurityScanDetailValue(value, depth = 0) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    return value.length > SECURITY_SCAN_DETAIL_STRING_MAX_CHARS
+      ? `${value.slice(0, SECURITY_SCAN_DETAIL_STRING_MAX_CHARS)}... [truncated]`
+      : value;
+  }
+  if (typeof value !== "object") return value;
+  if (depth > 6) return "[truncated-depth]";
+  if (Array.isArray(value)) {
+    return value.slice(0, SECURITY_SCAN_DETAIL_ARRAY_MAX_ITEMS)
+      .map((item) => sanitizeSecurityScanDetailValue(item, depth + 1));
+  }
+  const out = {};
+  Object.keys(value).forEach((key) => {
+    out[key] = sanitizeSecurityScanDetailValue(value[key], depth + 1);
+  });
+  return out;
+}
+
+function stringifySecurityScanDetails(details) {
+  const raw = JSON.stringify(details || {});
+  if (raw.length <= SECURITY_SCAN_DETAILS_MAX_CHARS) return raw;
+  const compact = sanitizeSecurityScanDetailValue(details || {});
+  compact._truncated = true;
+  compact._original_chars = raw.length;
+  const next = JSON.stringify(compact);
+  if (next.length <= SECURITY_SCAN_DETAILS_MAX_CHARS) return next;
+  return JSON.stringify({
+    _truncated: true,
+    _original_chars: raw.length,
+    message: "Security scan details exceeded Google Sheets cell limit; summary columns were still saved."
+  });
 }
 
 function escapePowerShellSingleQuoted(value) {
@@ -901,17 +939,23 @@ async function runSecurityScanOnce(options = {}) {
           low_count: result.low_count,
           pass_count: result.pass_count,
           is_https: result.is_https,
-          details_json: JSON.stringify({
+          details_json: stringifySecurityScanDetails({
             tls: result.tls,
             headers: result.headers,
             paths: result.paths
           })
         });
         if (!writeResponse.ok) {
-          writeErrors.push(`${service.name || service.id}: ${writeResponse.error || "updateSecurityScan failed"}`);
+          const message = `${service.name || service.id}: ${writeResponse.error || "updateSecurityScan failed"}`;
+          writeErrors.push(message);
+          await log(`[SECURITY_SCAN] write_failed service=${service.name || service.id}: ${message}`, "error");
+        } else {
+          await log(`[SECURITY_SCAN] write_ok service=${service.name || service.id} details_chars=${writeResponse.details_chars ?? "-"}`);
         }
       } catch (error) {
-        writeErrors.push(`${service.name || service.id}: ${error.message || error}`);
+        const message = `${service.name || service.id}: ${error.message || error}`;
+        writeErrors.push(message);
+        await log(`[SECURITY_SCAN] write_failed service=${service.name || service.id}: ${message}`, "error");
       }
     }
     return result;
@@ -937,7 +981,16 @@ async function runSecurityScanOnce(options = {}) {
     results,
     write_errors: writeErrors
   };
-  await log(JSON.stringify(summaryPayload, null, 2));
+  await log(JSON.stringify({
+    ok: true,
+    mode: "security_scan",
+    probe_id: RUNTIME.probeId,
+    probe_name: RUNTIME.probeName,
+    service_count: results.length,
+    result_count: results.filter((item) => item && item.ok).length,
+    write_error_count: writeErrors.length,
+    write_errors: writeErrors.slice(0, 10)
+  }, null, 2));
 
   maybeShowRunSummaryWindow({
     probeId: RUNTIME.probeId,
