@@ -3033,3 +3033,29 @@ label {
     max-height: 200px;
   }
 }
+
+/* 服務標籤 chips */
+.tag-chip-row { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.tag-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+  background: rgba(42, 161, 143, 0.14);
+  color: #2aa18f;
+  border: 1px solid rgba(42, 161, 143, 0.35);
+}
+
+/* 多 Probe 比較矩陣 */
+.matrix-table { width: 100%; border-collapse: collapse; }
+.matrix-table th, .matrix-table td {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  padding: 8px 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+.matrix-table th:first-child, .matrix-table td:first-child { text-align: left; }
+.matrix-table thead th { font-weight: 600; background: rgba(148, 163, 184, 0.10); }
+.matrix-cell-latency { margin-top: 3px; font-size: 11px; color: #94a3b8; }
+.matrix-cell-empty { color: #94a3b8; }

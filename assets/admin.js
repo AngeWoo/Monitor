@@ -18,6 +18,9 @@ const portScanConfigForm = document.getElementById('portScanConfigForm');
 const portScanConfigMessage = document.getElementById('portScanConfigMessage');
 const portScanRequestLog = document.getElementById('portScanRequestLog');
 const reloadPortScanConfigBtn = document.getElementById('reloadPortScanConfigBtn');
+const probeReleaseForm = document.getElementById('probeReleaseForm');
+const probeReleaseMessage = document.getElementById('probeReleaseMessage');
+const reloadProbeReleaseBtn = document.getElementById('reloadProbeReleaseBtn');
 const triggerPortScanBtn = document.getElementById('triggerPortScanBtn');
 const misplacedStartPortScanBtn = document.getElementById('startPortScanBtn');
 const deleteTestDataForm = document.getElementById('deleteTestDataForm');
@@ -75,6 +78,7 @@ function normalizeService(rawService) {
   service.id = safeText(service.id || '');
   service.name = safeText(service.name || service.url || '');
   service.url = safeText(service.url || '').trim();
+  service.tags = safeText(service.tags || '').trim();
   service.check_type = safeText(service.check_type || 'status_code').trim() || 'status_code';
   service.interval_min = Math.max(1, Number(service.interval_min || 5) || 5);
   service.max_redirects = Math.max(0, Math.min(10, Number(service.max_redirects || 5) || 5));
@@ -793,6 +797,7 @@ async function handleAdd(event) {
     action: 'addService',
     name: addForm.elements.name.value.trim(),
     url: addForm.elements.url.value.trim(),
+    tags: addForm.elements.tags ? addForm.elements.tags.value.trim() : '',
     interval_min: Number(addForm.elements.interval_min.value || 5),
     check_type: addForm.elements.check_type.value,
     expected_keyword: addForm.elements.expected_keyword.value.trim(),
@@ -1144,6 +1149,10 @@ rowTemplate = function rowTemplateSafe(rawService) {
             URL
             <input data-field="url" data-id="${serviceId}" value="${escapeAttr(service.url)}" />
           </label>
+          <label class="span-3">
+            Tags（逗號分隔）
+            <input data-field="tags" data-id="${serviceId}" value="${escapeAttr(service.tags || '')}" placeholder="例如 prod,web,db" />
+          </label>
           <label class="check-item service-inline-check span-1">
             <input data-field="enabled" data-id="${serviceId}" type="checkbox" ${enabled ? 'checked' : ''} />
             <span>Enabled</span>
@@ -1396,6 +1405,67 @@ async function handleSavePortScanConfig(event) {
 async function handleReloadPortScanConfigWithOverlay() {
   await runTransientLoading('正在重新載入 Port 掃描設定...', async (progress) => {
     await loadPortScanConfig(progress);
+  });
+}
+
+function applyProbeRelease(cfg) {
+  if (!probeReleaseForm) return;
+  probeReleaseForm.elements.latest_version.value = safeText(cfg?.latest_version || '');
+  probeReleaseForm.elements.sha256.value = safeText(cfg?.sha256 || '');
+  probeReleaseForm.elements.notes.value = safeText(cfg?.notes || '');
+}
+
+async function loadProbeRelease(onProgress) {
+  if (!probeReleaseForm) return null;
+  if (typeof onProgress === 'function') onProgress(12);
+  try {
+    const res = await apiGet({ action: 'getProbeRelease' }, 120000);
+    if (!res || res.ok === false) throw new Error(res?.error || 'getProbeRelease failed');
+    if (typeof onProgress === 'function') onProgress(78);
+    applyProbeRelease(res.data || {});
+    if (probeReleaseMessage) {
+      const v = safeText(res.data?.latest_version || '');
+      probeReleaseMessage.textContent = v
+        ? `目前公告的最新版本：${v}${res.data?.updated_at ? `（更新於 ${fmtDate(res.data.updated_at)}）` : ''}`
+        : '尚未公告任何版本（自動更新停用中）。';
+    }
+    if (typeof onProgress === 'function') onProgress(100);
+    return res.data || {};
+  } catch (err) {
+    if (probeReleaseMessage) probeReleaseMessage.textContent = `載入版本公告失敗: ${safeText(err.message)}`;
+    if (typeof onProgress === 'function') onProgress(100);
+    return null;
+  }
+}
+
+async function handleSaveProbeRelease(event) {
+  event.preventDefault();
+  if (!probeReleaseForm) return;
+  if (probeReleaseMessage) probeReleaseMessage.textContent = '正在儲存版本公告...';
+  try {
+    const payload = {
+      action: 'updateProbeRelease',
+      latest_version: probeReleaseForm.elements.latest_version.value.trim(),
+      sha256: probeReleaseForm.elements.sha256.value.trim(),
+      notes: probeReleaseForm.elements.notes.value.trim()
+    };
+    const res = await apiPost(payload, 120000);
+    if (!res || res.ok === false) throw new Error(res?.error || 'updateProbeRelease failed');
+    applyProbeRelease(res.data || {});
+    const v = safeText(res.data?.latest_version || '');
+    if (probeReleaseMessage) {
+      probeReleaseMessage.textContent = v
+        ? `已公告最新版本 ${v}。啟用自動更新的 Probe 將於下次監控週期升級。`
+        : '已清除版本公告，Probe 不會升級。';
+    }
+  } catch (err) {
+    if (probeReleaseMessage) probeReleaseMessage.textContent = `儲存版本公告失敗: ${safeText(err.message)}`;
+  }
+}
+
+async function handleReloadProbeReleaseWithOverlay() {
+  await runTransientLoading('正在重新載入版本公告...', async (progress) => {
+    await loadProbeRelease(progress);
   });
 }
 
@@ -1686,6 +1756,10 @@ function rowTemplate(rawService) {
             URL
             <input data-field="url" data-id="${serviceId}" value="${escapeAttr(service.url)}" />
           </label>
+          <label class="span-3">
+            Tags（逗號分隔）
+            <input data-field="tags" data-id="${serviceId}" value="${escapeAttr(service.tags || '')}" placeholder="例如 prod,web,db" />
+          </label>
           <label class="check-item service-inline-check span-1">
             <input data-field="enabled" data-id="${serviceId}" type="checkbox" ${enabled ? 'checked' : ''} />
             <span>Enabled</span>
@@ -1801,6 +1875,8 @@ if (sendReportNowBtn) sendReportNowBtn.addEventListener('click', handleSendRepor
 if (sendFullReportBtn) sendFullReportBtn.addEventListener('click', handleSendFullReport);
 if (portScanConfigForm) portScanConfigForm.addEventListener('submit', handleSavePortScanConfig);
 if (reloadPortScanConfigBtn) reloadPortScanConfigBtn.addEventListener('click', handleReloadPortScanConfigWithOverlay);
+if (probeReleaseForm) probeReleaseForm.addEventListener('submit', handleSaveProbeRelease);
+if (reloadProbeReleaseBtn) reloadProbeReleaseBtn.addEventListener('click', handleReloadProbeReleaseWithOverlay);
 if (triggerPortScanBtn) triggerPortScanBtn.addEventListener('click', handleRequestPortScanWithOverlay);
 if (triggerSecurityScanBtn) triggerSecurityScanBtn.addEventListener('click', handleRequestSecurityScanWithOverlay);
 
@@ -1868,7 +1944,8 @@ async function initFirstLoad() {
       loadServices((p) => setLoadingProgress(8 + p * 0.46, '正在載入服務設定...')),
       loadProbes((p) => setLoadingProgress(54 + p * 0.16, '正在載入 Probe 狀態...')),
       loadReportConfig((p) => setLoadingProgress(70 + p * 0.11, '正在載入報表設定...')),
-      loadPortScanConfig((p) => setLoadingProgress(78 + p * 0.07, '正在載入 Port 掃描設定...')),
+      loadPortScanConfig((p) => setLoadingProgress(78 + p * 0.05, '正在載入 Port 掃描設定...')),
+      loadProbeRelease((p) => setLoadingProgress(83 + p * 0.02, '正在載入版本公告...')),
       loadSecurityScans((p) => setLoadingProgress(85 + p * 0.05, '正在載入安全性掃描...')),
       loadChecksDates(false, (p) => setLoadingProgress(90 + p * 0.10, '正在載入日期資料...'))
     ]);

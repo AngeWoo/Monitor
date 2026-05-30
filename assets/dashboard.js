@@ -16,6 +16,9 @@ const loadingBarInner = document.getElementById('loadingBarInner');
 const refreshBtn = document.getElementById('refreshBtn');
 const refreshIntervalSelect = document.getElementById('refreshIntervalSelect');
 const autoRefreshInfo = document.getElementById('autoRefreshInfo');
+const tagFilterSelect = document.getElementById('tagFilterSelect');
+const loadMatrixBtn = document.getElementById('loadMatrixBtn');
+const probeMatrixWrap = document.getElementById('probeMatrixWrap');
 const hoursSelect = document.getElementById('hoursSelect');
 const latencyTitle = document.getElementById('latencyTitle');
 const uptimeTitle = document.getElementById('uptimeTitle');
@@ -45,6 +48,7 @@ let services = [];
 let portScans = [];
 let securityScans = [];
 let selectedId = null;
+let tagFilter = '';
 let latencyChart;
 let uptimeChart;
 let allLatencyChart;
@@ -715,20 +719,53 @@ async function loadChecksDateRange(onProgress) {
   }
 };
 
+function serviceTagList(s) {
+  return safeText(s && s.tags)
+    .split(/[,，]/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+// 依目前服務集合重建標籤下拉選單，保留使用者目前選取項。
+function refreshTagFilterOptions() {
+  if (!tagFilterSelect) return;
+  const tagSet = new Set();
+  services.forEach((s) => serviceTagList(s).forEach((t) => tagSet.add(t)));
+  const tags = Array.from(tagSet).sort((a, b) => a.localeCompare(b));
+  const signature = tags.join('');
+  if (tagFilterSelect.dataset.sig === signature) return;
+  tagFilterSelect.dataset.sig = signature;
+  if (tagFilter && !tagSet.has(tagFilter)) tagFilter = '';
+  const current = tagFilter;
+  tagFilterSelect.innerHTML = '<option value="">全部</option>'
+    + tags.map((t) => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join('');
+  tagFilterSelect.value = current;
+}
+
 renderTable = function renderTableSafe() {
+  refreshTagFilterOptions();
   if (!services.length) {
     tbody.innerHTML = '<tr><td colspan="9">尚無資料</td></tr>';
     return;
   }
 
-  tbody.innerHTML = services.map((s) => {
+  const visible = tagFilter
+    ? services.filter((s) => serviceTagList(s).includes(tagFilter))
+    : services;
+  if (!visible.length) {
+    tbody.innerHTML = `<tr><td colspan="9">沒有符合標籤「${escapeHtml(tagFilter)}」的服務</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = visible.map((s) => {
     const rowClass = s.id === selectedId ? 'selected-row' : '';
     const latencyMs = normalizeLatencyMs(s.last_latency_ms);
     const serviceUrl = safeText(s.url);
     const href = safeHttpUrl(serviceUrl);
+    const tagChips = serviceTagList(s).map((t) => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('');
     return `
       <tr class="${rowClass}">
-        <td data-label="服務"><span class="service-name-with-dot">${statusDot(s.last_status)}<span>${escapeHtml(safeText(s.name))}</span></span></td>
+        <td data-label="服務"><span class="service-name-with-dot">${statusDot(s.last_status)}<span>${escapeHtml(safeText(s.name))}</span></span>${tagChips ? `<div class="tag-chip-row">${tagChips}</div>` : ''}</td>
         <td data-label="URL">
           <a class="url-ellipsis" href="${escapeAttr(href)}" target="_blank" rel="noreferrer" title="${escapeAttr(serviceUrl)}">
             ${escapeHtml(serviceUrl)}
@@ -744,6 +781,57 @@ renderTable = function renderTableSafe() {
         <td data-label="操作"><button class="btn tiny" data-id="${escapeAttr(safeText(s.id))}">查看詳情</button></td>
       </tr>`;
   }).join('');
+}
+
+function matrixStatusCell(cell) {
+  if (!cell || !safeText(cell.status)) {
+    return '<td data-label="-" class="matrix-cell matrix-cell-empty">—</td>';
+  }
+  const latency = normalizeLatencyMs(cell.latency_ms);
+  const when = cell.timestamp ? fmtDate(cell.timestamp) : '';
+  return `<td class="matrix-cell" title="${escapeAttr(when)}">${statusBadge(cell.status)}<div class="matrix-cell-latency">${latency != null ? `${latency} ms` : '-'}</div></td>`;
+}
+
+function renderProbeMatrix(data) {
+  if (!probeMatrixWrap) return;
+  const probes = Array.isArray(data && data.probes) ? data.probes : [];
+  const matrixServices = Array.isArray(data && data.services) ? data.services : [];
+  const matrix = (data && data.matrix) || {};
+
+  if (!probes.length || !matrixServices.length) {
+    probeMatrixWrap.innerHTML = '<p class="message">尚無足夠資料可比較（需要至少一個 Probe 與一個服務）。</p>';
+    return;
+  }
+
+  const filtered = tagFilter
+    ? matrixServices.filter((s) => serviceTagList(s).includes(tagFilter))
+    : matrixServices;
+  const rowsSource = filtered.length ? filtered : matrixServices;
+
+  const head = `<tr><th>服務</th>${probes.map((p) => {
+    const dot = p.online ? '🟢' : '⚪';
+    return `<th title="${escapeAttr(p.host_name || '')}">${dot} ${escapeHtml(p.probe_name || p.probe_id)}</th>`;
+  }).join('')}</tr>`;
+
+  const body = rowsSource.map((s) => {
+    const cells = probes.map((p) => matrixStatusCell(matrix[s.id] ? matrix[s.id][p.probe_id] : null)).join('');
+    return `<tr><td data-label="服務">${escapeHtml(safeText(s.name))}</td>${cells}</tr>`;
+  }).join('');
+
+  probeMatrixWrap.innerHTML = `<table class="matrix-table"><thead>${head}</thead><tbody>${body}</tbody></table>`
+    + `<p class="hint">更新於 ${fmtDate(data.now)}　🟢 上線　⚪ 離線</p>`;
+}
+
+async function loadProbeMatrix() {
+  if (!probeMatrixWrap) return;
+  probeMatrixWrap.innerHTML = '<p class="message">載入中...</p>';
+  try {
+    const res = await apiGet({ action: 'probeServiceMatrix' });
+    if (!res || res.ok === false) throw new Error((res && res.error) || 'probeServiceMatrix failed');
+    renderProbeMatrix(res.data || {});
+  } catch (err) {
+    probeMatrixWrap.innerHTML = `<p class="message">載入比較矩陣失敗: ${escapeHtml(safeText(err && err.message))}</p>`;
+  }
 }
 
 function ensureCharts() {
@@ -1164,7 +1252,27 @@ renderMetrics = async function renderMetricsSafe(onProgress) {
   return { serviceName, rows, hours };
 };
 
-async function loadServices() {
+async function loadServices(options) {
+  // 輕量刷新（自動刷新用）：只重抓服務狀態並重繪摘要/表格，
+  // 不重抓 port/security 掃描、也不重算 metrics 全量與圖表，避免每個間隔都打全量。
+  const light = !!(options && options.light);
+  if (light) {
+    if (isLoading) return;
+    isLoading = true;
+    try {
+      const servicesResult = await apiGet({ action: 'listServices' });
+      services = servicesResult.data || [];
+      if (selectedId !== ALL_SERVICES_ID && selectedId && !services.some((s) => s.id === selectedId)) {
+        selectedId = ALL_SERVICES_ID;
+      }
+      renderSummary();
+      renderTable();
+    } finally {
+      isLoading = false;
+    }
+    return;
+  }
+
   if (isLoading) return;
   isLoading = true;
   const firstPaintLoad = firstLoadPending;
@@ -1257,7 +1365,7 @@ function startAutoRefresh() {
   resetAutoRefreshClock();
   autoRefreshTimer = window.setInterval(async () => {
     try {
-      await loadServices();
+      await loadServices({ light: true });
       markRefreshDone();
     } catch (_) {
       // Keep timer running even if one refresh fails.
@@ -1327,6 +1435,17 @@ function bindEvents() {
     startAutoRefresh();
     updateAutoRefreshHint();
   });
+
+  if (tagFilterSelect) {
+    tagFilterSelect.addEventListener('change', () => {
+      tagFilter = safeText(tagFilterSelect.value).trim();
+      renderTable();
+    });
+  }
+
+  if (loadMatrixBtn) {
+    loadMatrixBtn.addEventListener('click', () => { loadProbeMatrix(); });
+  }
 
   tbody.addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-id]');
