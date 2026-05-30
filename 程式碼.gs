@@ -57,13 +57,16 @@ const PROP_SERVICE_RECOMMENDATION_MIGRATION = "SERVICE_RECOMMENDED_SETTINGS_V1";
 const PROP_PROBE_RUN_SIGNAL = "PROBE_RUN_SIGNAL";
 const PROP_PORT_SCAN_SIGNAL = "PORT_SCAN_SIGNAL";
 const PROP_SECURITY_SCAN_SIGNAL = "SECURITY_SCAN_SIGNAL";
+// 自動更新：後端只保存「最新版本號 + SHA-256 + 備註」，不保存下載網址。
+// 下載來源由各 probe 本機 config 的 update_url 決定（信任來源），避免後端被竄改即可指向任意 exe。
+const PROP_PROBE_RELEASE = "PROBE_RELEASE";
 const PROBE_ONLINE_WINDOW_MS = 3 * 60 * 1000;
 const PROBE_RESULT_GRACE_MS = 2 * 60 * 1000;
 
 const TEST_DELETE_DEFAULT_SHEET = SHEET_CHECKS;
 
 const SERVICE_HEADERS = [
-  "id", "name", "url", "interval_min", "enabled",
+  "id", "name", "url", "interval_min", "enabled", "tags",
   "check_type", "expected_keyword", "forbidden_keyword", "expected_final_url", "secondary_url",
   "port_scan_enabled", "port_scan_host", "port_scan_ports", "port_scan_device_name",
   "allow_redirects", "max_redirects", "latency_warn_ms", "fail_threshold", "retry_count", "retry_delay_ms",
@@ -227,6 +230,15 @@ function doGet(e) {
         break;
       case "completeSecurityScanSignal":
         result = completeSecurityScanSignal_(p);
+        break;
+      case "getProbeRelease":
+        result = { ok: true, data: getProbeRelease_() };
+        break;
+      case "updateProbeRelease":
+        result = updateProbeRelease_(p);
+        break;
+      case "probeServiceMatrix":
+        result = probeServiceMatrix_();
         break;
       case "metrics":
         result = getMetrics_(p.serviceId, toNum_(p.hours, 24));
@@ -466,6 +478,15 @@ function doPost(e) {
       case "completeSecurityScanSignal":
         result = completeSecurityScanSignal_(body);
         break;
+      case "getProbeRelease":
+        result = { ok: true, data: getProbeRelease_() };
+        break;
+      case "updateProbeRelease":
+        result = updateProbeRelease_(body);
+        break;
+      case "probeServiceMatrix":
+        result = probeServiceMatrix_();
+        break;
       case "markProbeOffline":
         result = markProbeOffline_(body);
         break;
@@ -591,6 +612,7 @@ function runScheduler() {
       requested_by: "scheduler"
     });
     maybeSendScheduledReport_(summary.now || new Date());
+    maybeRunRetention_(summary.now || new Date());
     return summary;
   } finally {
     lock.releaseLock();
@@ -995,6 +1017,22 @@ function checkUrl_(service) {
 }
 
 /*************** Service CRUD ***************/
+// 標籤：以逗號分隔的字串儲存。正規化＝去空白、去空項、去重、以 "," 重組。
+function normalizeTags_(raw) {
+  if (Array.isArray(raw)) raw = raw.join(",");
+  var seen = {};
+  var out = [];
+  String(raw || "").split(/[,，]/).forEach(function(t) {
+    var tag = String(t || "").trim();
+    if (!tag) return;
+    var key = tag.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(tag);
+  });
+  return out.join(",");
+}
+
 function addService_(b) {
   if (!b || !b.url) return { ok: false, error: "Missing url" };
 
@@ -1011,6 +1049,7 @@ function addService_(b) {
     url: b.url,
     interval_min: Math.max(1, toNum_(b.interval_min, 5)),
     enabled: true,
+    tags: normalizeTags_(b.tags),
     check_type: cfg.check_type,
     expected_keyword: cfg.expected_keyword,
     forbidden_keyword: cfg.forbidden_keyword,
@@ -1060,6 +1099,7 @@ function updateService_(b) {
     if (b.url !== undefined) sh.getRange(r + 1, idx.url + 1).setValue(b.url);
     if (b.interval_min !== undefined) sh.getRange(r + 1, idx.interval_min + 1).setValue(Math.max(1, toNum_(b.interval_min, 5)));
     if (b.enabled !== undefined) sh.getRange(r + 1, idx.enabled + 1).setValue(!!b.enabled);
+    if (b.tags !== undefined && idx.tags !== undefined) sh.getRange(r + 1, idx.tags + 1).setValue(normalizeTags_(b.tags));
     if (b.check_type !== undefined && idx.check_type !== undefined) sh.getRange(r + 1, idx.check_type + 1).setValue(normalizeServiceConfig_(b).check_type);
     if (b.expected_keyword !== undefined && idx.expected_keyword !== undefined) sh.getRange(r + 1, idx.expected_keyword + 1).setValue(String(b.expected_keyword || "").trim());
     if (b.forbidden_keyword !== undefined && idx.forbidden_keyword !== undefined) sh.getRange(r + 1, idx.forbidden_keyword + 1).setValue(String(b.forbidden_keyword || "").trim());
@@ -1398,6 +1438,72 @@ function getLatestProbeChecksByService_(onlineProbeMap) {
   });
 
   return latestByService;
+}
+
+// 多 probe 跨區比較矩陣：每個服務 × 每個 probe 的「最新一筆」檢查結果。
+function probeServiceMatrix_() {
+  var nowMs = Date.now();
+
+  var probesRes = listProbes_();
+  var probeRows = (probesRes && probesRes.data) ? probesRes.data : [];
+  var probeList = probeRows.map(function(p) {
+    return {
+      probe_id: String(p.probe_id || "").trim(),
+      probe_name: String(p.probe_name || p.probe_id || "").trim(),
+      host_name: String(p.host_name || "").trim(),
+      online: isProbeOnline_(p, nowMs)
+    };
+  }).filter(function(p) { return p.probe_id; });
+
+  var services = [];
+  var svcSh = SpreadsheetApp.getActive().getSheetByName(SHEET_SERVICES);
+  if (svcSh) {
+    ensureHeaders_(svcSh, SERVICE_HEADERS);
+    var svals = svcSh.getDataRange().getValues();
+    if (svals.length >= 2) {
+      var sidx = indexMap_(svals[0]);
+      for (var i = 1; i < svals.length; i++) {
+        var sid = String(svals[i][sidx.id] || "").trim();
+        if (!sid) continue;
+        if (sidx.enabled !== undefined && !toBool_(svals[i][sidx.enabled])) continue;
+        services.push({
+          id: sid,
+          name: String(svals[i][sidx.name] || sid).trim(),
+          tags: sidx.tags !== undefined ? normalizeTags_(svals[i][sidx.tags]) : ""
+        });
+      }
+    }
+  }
+
+  var matrix = {};
+  var pcSh = SpreadsheetApp.getActive().getSheetByName(SHEET_PROBE_CHECKS);
+  if (pcSh) {
+    ensureHeaders_(pcSh, PROBE_CHECK_HEADERS);
+    var pvals = pcSh.getDataRange().getValues();
+    if (pvals.length >= 2) {
+      var pidx = indexMap_(pvals[0]);
+      for (var r = 1; r < pvals.length; r++) {
+        var row = pvals[r];
+        var probeId = String(row[pidx.probe_id] || "").trim();
+        var serviceId = String(row[pidx.service_id] || "").trim();
+        if (!probeId || !serviceId) continue;
+        var tsMs = toTimeMs_(row[pidx.timestamp]);
+        if (!tsMs) continue;
+        if (!matrix[serviceId]) matrix[serviceId] = {};
+        var existing = matrix[serviceId][probeId];
+        if (existing && existing.timestamp_ms >= tsMs) continue;
+        matrix[serviceId][probeId] = {
+          status: normalizeServiceStatus_(row[pidx.status]),
+          http_code: pidx.http_code !== undefined ? row[pidx.http_code] : "",
+          latency_ms: pidx.latency_ms !== undefined ? row[pidx.latency_ms] : "",
+          timestamp: row[pidx.timestamp],
+          timestamp_ms: tsMs
+        };
+      }
+    }
+  }
+
+  return { ok: true, data: { probes: probeList, services: services, matrix: matrix, now: new Date().toISOString() } };
 }
 
 function isProbeOnline_(probe, nowMs) {
@@ -2354,11 +2460,12 @@ function updateSecurityScan_(payload) {
         var rowProbeId = idx.probe_id !== undefined ? String(data[r][idx.probe_id] || '').trim() : '';
         if (rowServiceId === serviceId && (!probeId || !rowProbeId || rowProbeId === probeId)) {
           var rowNum = r + 2;
+          // 以單次 setValues 寫回整列，取代逐格 setValue，減少 Sheet API 呼叫。
+          var rowValues = data[r].slice();
           header.forEach(function(h, c) {
-            if (rowData[h] !== undefined) {
-              sh.getRange(rowNum, c + 1).setValue(rowData[h]);
-            }
+            if (rowData[h] !== undefined) rowValues[c] = rowData[h];
           });
+          sh.getRange(rowNum, 1, 1, header.length).setValues([rowValues]);
           SpreadsheetApp.flush();
           return { ok: true, updated: true, row_num: rowNum, service_id: serviceId, details_chars: detailsJson.length };
         }
@@ -2811,6 +2918,42 @@ function invalidateMetricsAllCache_() {
   } catch (_) {}
 }
 
+/*************** Data retention（保留上限）***************/
+// checks / probe_checks 無上限會越來越大，拖慢全表掃描與刪除。每日維護一次，
+// 超過上限時刪除「最舊」的資料列（資料以時間順序 append，最舊在最上面）。
+// 單次最多刪 RETENTION_MAX_DELETE_PER_RUN 列，避免一次刪太多撞到 GAS 執行時間上限。
+var CHECK_RETENTION_MAX_ROWS = 80000;
+var PROBE_CHECK_RETENTION_MAX_ROWS = 80000;
+var RETENTION_MAX_DELETE_PER_RUN = 20000;
+var PROP_RETENTION_LAST_DATE = 'RETENTION_LAST_DATE';
+
+function trimSheetToMaxDataRows_(sheetName, maxRows) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(sheetName);
+  if (!sh) return 0;
+  var dataRows = sh.getLastRow() - 1; // 扣掉表頭
+  if (dataRows <= maxRows) return 0;
+  var excess = Math.min(dataRows - maxRows, RETENTION_MAX_DELETE_PER_RUN);
+  sh.deleteRows(2, excess);
+  return excess;
+}
+
+// 每天最多執行一次（以本地日期為界），由 runScheduler 呼叫。
+function maybeRunRetention_(now) {
+  try {
+    var tz = Session.getScriptTimeZone();
+    var today = Utilities.formatDate(now || new Date(), tz, 'yyyy-MM-dd');
+    var props = PropertiesService.getScriptProperties();
+    if (props.getProperty(PROP_RETENTION_LAST_DATE) === today) return;
+    props.setProperty(PROP_RETENTION_LAST_DATE, today);
+    var removed = trimSheetToMaxDataRows_(SHEET_CHECKS, CHECK_RETENTION_MAX_ROWS)
+                + trimSheetToMaxDataRows_(SHEET_PROBE_CHECKS, PROBE_CHECK_RETENTION_MAX_ROWS);
+    if (removed) {
+      invalidateChecksDateCache_();
+      invalidateMetricsAllCache_();
+    }
+  } catch (_) {}
+}
+
 function getChecksDatesFromSheet_() {
   var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_CHECKS);
   if (!sh) return null;
@@ -3023,6 +3166,46 @@ function updatePortScanConfig_(payload) {
     ports: payload && payload.ports
   });
   PropertiesService.getScriptProperties().setProperty(PROP_PORT_SCAN_CONFIG, JSON.stringify(cfg));
+  return { ok: true, data: cfg };
+}
+
+// ── Probe 自動更新（版本檢查）────────────────────────────────────────────────
+function defaultProbeRelease_() {
+  return {
+    latest_version: "",
+    sha256: "",
+    notes: "",
+    updated_at: ""
+  };
+}
+
+function normalizeProbeRelease_(cfg) {
+  const out = Object.assign({}, defaultProbeRelease_(), cfg || {});
+  out.latest_version = String(out.latest_version || "").trim();
+  out.sha256 = String(out.sha256 || "").trim().toLowerCase();
+  out.notes = String(out.notes || "").trim();
+  out.updated_at = String(out.updated_at || "").trim();
+  return out;
+}
+
+function getProbeRelease_() {
+  const raw = PropertiesService.getScriptProperties().getProperty(PROP_PROBE_RELEASE);
+  if (!raw) return defaultProbeRelease_();
+  try {
+    return normalizeProbeRelease_(JSON.parse(raw));
+  } catch (_) {
+    return defaultProbeRelease_();
+  }
+}
+
+function updateProbeRelease_(payload) {
+  const cfg = normalizeProbeRelease_({
+    latest_version: payload && payload.latest_version,
+    sha256: payload && payload.sha256,
+    notes: payload && payload.notes,
+    updated_at: new Date().toISOString()
+  });
+  PropertiesService.getScriptProperties().setProperty(PROP_PROBE_RELEASE, JSON.stringify(cfg));
   return { ok: true, data: cfg };
 }
 
