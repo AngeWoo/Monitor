@@ -792,6 +792,34 @@ function matrixStatusCell(cell) {
   return `<td class="matrix-cell" title="${escapeAttr(when)}">${statusBadge(cell.status)}<div class="matrix-cell-latency">${latency != null ? `${latency} ms` : '-'}</div></td>`;
 }
 
+function matrixProbeCard(probe, cell) {
+  const probeName = safeText(probe.probe_name || probe.probe_id || 'Probe');
+  const probeMeta = safeText(probe.host_name || probe.probe_id || '');
+  const onlineLabel = probe.online ? '上線' : '離線';
+  const onlineClass = probe.online ? 'online' : 'offline';
+  if (!cell || !safeText(cell.status)) {
+    return `
+      <div class="matrix-probe-card matrix-probe-empty" title="${escapeAttr(probeMeta)}">
+        <div class="matrix-probe-head">
+          <span class="matrix-probe-name">${escapeHtml(probeName)}</span>
+          <span class="matrix-probe-state ${onlineClass}">${onlineLabel}</span>
+        </div>
+        <div class="matrix-probe-result matrix-cell-empty">—</div>
+      </div>`;
+  }
+  const latency = normalizeLatencyMs(cell.latency_ms);
+  const when = cell.timestamp ? fmtDate(cell.timestamp) : '';
+  return `
+    <div class="matrix-probe-card" title="${escapeAttr([probeMeta, when].filter(Boolean).join(' | '))}">
+      <div class="matrix-probe-head">
+        <span class="matrix-probe-name">${escapeHtml(probeName)}</span>
+        <span class="matrix-probe-state ${onlineClass}">${onlineLabel}</span>
+      </div>
+      <div class="matrix-probe-result">${statusBadge(cell.status)}</div>
+      <div class="matrix-cell-latency">${latency != null ? `${latency} ms` : '-'}</div>
+    </div>`;
+}
+
 function renderProbeMatrix(data) {
   if (!probeMatrixWrap) return;
   const probes = Array.isArray(data && data.probes) ? data.probes : [];
@@ -808,18 +836,17 @@ function renderProbeMatrix(data) {
     : matrixServices;
   const rowsSource = filtered.length ? filtered : matrixServices;
 
-  const head = `<tr><th>服務</th>${probes.map((p) => {
-    const dot = p.online ? '🟢' : '⚪';
-    return `<th title="${escapeAttr(p.host_name || '')}">${dot} ${escapeHtml(p.probe_name || p.probe_id)}</th>`;
-  }).join('')}</tr>`;
-
   const body = rowsSource.map((s) => {
-    const cells = probes.map((p) => matrixStatusCell(matrix[s.id] ? matrix[s.id][p.probe_id] : null)).join('');
-    return `<tr><td data-label="服務">${escapeHtml(safeText(s.name))}</td>${cells}</tr>`;
+    const cells = probes.map((p) => matrixProbeCard(p, matrix[s.id] ? matrix[s.id][p.probe_id] : null)).join('');
+    return `
+      <article class="matrix-service-row">
+        <div class="matrix-service-name">${escapeHtml(safeText(s.name) || '-')}</div>
+        <div class="matrix-probe-grid">${cells}</div>
+      </article>`;
   }).join('');
 
-  probeMatrixWrap.innerHTML = `<table class="matrix-table"><thead>${head}</thead><tbody>${body}</tbody></table>`
-    + `<p class="hint">更新於 ${fmtDate(data.now)}　🟢 上線　⚪ 離線</p>`;
+  probeMatrixWrap.innerHTML = `<div class="matrix-card-list">${body}</div>`
+    + `<p class="hint">更新於 ${fmtDate(data.now)}　上線 / 離線為 Probe 最近狀態</p>`;
 }
 
 async function loadProbeMatrix() {
@@ -1821,6 +1848,5 @@ async function renderMetrics(onProgress) {
     isLoading = false;
   }
 })();
-
 
 
