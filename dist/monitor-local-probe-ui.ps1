@@ -277,9 +277,32 @@ function Finish-Worker {
   Update-Status
 }
 
+# 套用 worker 暫存的更新：worker 會把新版下載並驗證後存成 <exe>.new。
+# 只有在沒有 worker 執行時（exe 未被占用）才換檔，避免邊跑邊覆蓋。
+function Apply-StagedUpdate {
+  $stagedPath = "$exePath.new"
+  if (-not (Test-Path -LiteralPath $stagedPath)) { return }
+  if ($script:isTaskRunning) { return }
+  $backupPath = "$exePath.bak"
+  try {
+    if (Test-Path -LiteralPath $backupPath) { Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $exePath)    { Move-Item -LiteralPath $exePath -Destination $backupPath -Force }
+    Move-Item -LiteralPath $stagedPath -Destination $exePath -Force
+    Append-Log ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] 已套用 probe 更新（monitor-local-probe.exe）。")
+  } catch {
+    Append-Log ("[UPDATE] 套用更新失敗: " + $_.Exception.Message)
+    try {
+      if ((Test-Path -LiteralPath $backupPath) -and -not (Test-Path -LiteralPath $exePath)) {
+        Move-Item -LiteralPath $backupPath -Destination $exePath -Force
+      }
+    } catch {}
+  }
+}
+
 function Start-Worker {
   param([string]$TaskName, [string[]]$ArgumentList, [string]$StartMessage, [string]$RunningStatus)
   if ($script:isTaskRunning) { Append-Log "Another task is already in progress."; return $false }
+  Apply-StagedUpdate
   $script:stdoutPath = [System.IO.Path]::GetTempFileName()
   $script:stderrPath = [System.IO.Path]::GetTempFileName()
   $script:stdoutOffset = 0; $script:stderrOffset = 0
