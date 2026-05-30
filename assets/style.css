@@ -1112,7 +1112,14 @@ label {
 .hint {
   color: var(--muted);
   font-size: 0.88rem;
-  white-space: nowrap;
+  line-height: 1.65;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.hint code {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .inline-field {
