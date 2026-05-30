@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Server Monitor 儀表板</title>
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260315-a045" />
-<link rel="stylesheet" href="./assets/style.css?v=20260411-m001" />
+<link rel="stylesheet" href="./assets/style.css?v=20260530-m002" />
 </head>
 <body class="page-dashboard">
   <div id="loadingOverlay" class="loading-overlay">
@@ -43,6 +43,10 @@
       <div class="panel-header">
         <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M7 9h6"></path><path d="M7 13h10"></path></svg></span><span>服務狀態</span></h2>
         <div class="row-actions">
+          <label class="inline-field" for="tagFilterSelect">標籤</label>
+          <select id="tagFilterSelect" class="select">
+            <option value="">全部</option>
+          </select>
           <label class="inline-field" for="refreshIntervalSelect">自動更新頻率</label>
           <select id="refreshIntervalSelect" class="select">
             <option value="30">30 秒</option>
@@ -70,6 +74,19 @@
           </thead>
           <tbody id="servicesBody"></tbody>
         </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg></span><span>多 Probe 比較</span></h2>
+        <div class="row-actions">
+          <span class="hint">各 Probe 對每個服務的最新狀態，一眼看出跨區差異</span>
+          <button id="loadMatrixBtn" class="btn">載入 / 重新整理</button>
+        </div>
+      </div>
+      <div id="probeMatrixWrap" class="table-wrap">
+        <p id="probeMatrixHint" class="message">按「載入 / 重新整理」以顯示多 Probe 比較矩陣。</p>
       </div>
     </section>
 
@@ -225,6 +242,6 @@
     <small>Copyright © 2026 Server Monitor. All rights reserved.</small>
   </footer>
 
-  <script type="module" src="./assets/dashboard.js?v=20260316-a069"></script>
+  <script type="module" src="./assets/dashboard.js?v=20260530-a002"></script>
 </body>
 </html>

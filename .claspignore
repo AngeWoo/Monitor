@@ -1,0 +1,4 @@
+# 只推送 GAS 專案需要的檔案到 Apps Script
+**/**
+!gas/**.gs
+!gas/appsscript.json

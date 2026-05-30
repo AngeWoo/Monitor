@@ -234,6 +234,10 @@
           <input required name="url" type="url" placeholder="https://example.com/health" />
         </label>
         <label>
+          標籤（逗號分隔）
+          <input name="tags" placeholder="例如 prod,web,db" />
+        </label>
+        <label>
           檢查間隔 (分)
           <input required name="interval_min" type="number" min="1" max="1440" value="5" />
         </label>
@@ -303,6 +307,37 @@
 
     <section class="panel">
       <div class="panel-header">
+        <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m8 11 4 4 4-4"></path><path d="M5 19h14"></path></svg></span><span>Probe 自動更新</span></h2>
+        <div class="row-actions">
+          <button id="reloadProbeReleaseBtn" class="btn" type="button">重新載入</button>
+        </div>
+      </div>
+      <p class="hint">設定最新 probe 版本後，已啟用自動更新（<code>auto_update_enabled</code>）且設定了信任下載來源（<code>update_url</code>）的 Probe，會在下次監控週期自動下載、驗證 SHA-256 並於下次啟動套用。下載來源由各 Probe 本機設定，後端僅公告版本號與雜湊值。</p>
+      <form id="probeReleaseForm" class="port-scan-config-grid">
+        <div class="port-scan-config-main">
+          <label class="port-scan-config-field">
+            最新版本號（PROBE_SCRIPT_VERSION）
+            <input name="latest_version" placeholder="例如 20260601-a001" />
+          </label>
+          <label class="port-scan-config-field">
+            SHA-256（選填，建議填寫以驗證完整性）
+            <input name="sha256" placeholder="新版 exe 的 sha256 十六進位字串" />
+          </label>
+          <label class="port-scan-config-field">
+            版本備註（選填）
+            <input name="notes" placeholder="這次更新的說明" />
+          </label>
+        </div>
+        <div class="port-scan-config-actions">
+          <button class="btn report-save-btn" type="submit">儲存版本公告</button>
+        </div>
+        <p class="message report-inline-note">留空版本號等同停用更新公告（Probe 不會升級）。設定的版本號需「大於」Probe 目前回報的版本才會觸發更新。</p>
+      </form>
+      <p id="probeReleaseMessage" class="message"></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
         <h2 class="section-title"><span class="title-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"></rect><rect x="4" y="14" width="16" height="5" rx="1.5"></rect><path d="M8 7.5h.01"></path><path d="M8 16.5h.01"></path></svg></span><span>服務管理</span></h2>
         <div class="row-actions">
           <button id="runNowBtn" class="btn secondary" type="button">立即執行檢查</button>
@@ -333,6 +368,6 @@
     </div>
   </div>
 
-  <script type="module" src="./assets/admin.js?v=20260525-a001"></script>
+  <script type="module" src="./assets/admin.js?v=20260530-a002"></script>
 </body>
 </html>

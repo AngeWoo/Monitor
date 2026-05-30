@@ -5,9 +5,10 @@ const tls = require("tls");
 const net = require("net");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 
-const PROBE_SCRIPT_VERSION = "20260525-a001";
+const PROBE_SCRIPT_VERSION = "20260530-a001";
 const DEFAULT_API_BASE = "https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec";
 const DEFAULT_API_REDIRECTS = 5;
 const DEFAULT_CONTROL_INTERVAL_SEC = 60;
@@ -181,6 +182,28 @@ function loadRuntimeConfig() {
   const probeName = process.env.MONITOR_PROBE_NAME || fileConfig.probe_name || probeId;
   const apiBase = process.env.MONITOR_API_BASE || fileConfig.api_base || DEFAULT_API_BASE;
   const requestTimeoutMs = Math.max(1000, Number(process.env.MONITOR_REQUEST_TIMEOUT_MS || fileConfig.request_timeout_ms || 15000));
+  // GAS Web App 呼叫（listServices / upsertProbe / updateSecurityScan 等）常因冷啟動、
+  // 清單較大或 LockService 競爭而需要較久，必須與「掃描外部網站」的逾時分開，否則
+  // 掃描會在起步呼叫 GAS 時就 15 秒逾時、整筆失敗，導致結果寫不進去。
+  const apiTimeoutMs = Math.max(
+    requestTimeoutMs,
+    Number(process.env.MONITOR_API_TIMEOUT_MS || fileConfig.api_timeout_ms || 60000)
+  );
+  // Port 掃描以「併發」進行，可大幅縮短掃描時間（尤其遇到被防火牆 drop、需等滿逾時的 port）。
+  // 兩者皆可調：併發數 1-64（預設 16），每個 port 的 TCP 連線逾時 200-10000ms（預設 2500）。
+  const portScanConcurrency = Math.max(1, Math.min(64,
+    Number(process.env.MONITOR_PORT_SCAN_CONCURRENCY || fileConfig.port_scan_concurrency || 16)
+  ));
+  const portScanTimeoutMs = Math.max(200, Math.min(10000,
+    Number(process.env.MONITOR_PORT_SCAN_TIMEOUT_MS || fileConfig.port_scan_timeout_ms || DEFAULT_PORT_SCAN_TIMEOUT_MS)
+  ));
+  // 自動更新：是否啟用，以及「信任的」下載來源網址（放在本機 config，後端不下發網址）。
+  const autoUpdateEnabled = toBool(
+    process.env.MONITOR_AUTO_UPDATE !== undefined
+      ? process.env.MONITOR_AUTO_UPDATE
+      : (fileConfig.auto_update_enabled !== undefined ? fileConfig.auto_update_enabled : false)
+  );
+  const updateUrl = String(process.env.MONITOR_UPDATE_URL || fileConfig.update_url || "").trim();
   const userAgent = process.env.MONITOR_USER_AGENT || fileConfig.user_agent || `MonitorLocalProbe/1.0 (${probeId})`;
   const showResultWindow = cli.noResultWindow
     ? false
@@ -219,6 +242,11 @@ function loadRuntimeConfig() {
     probeName,
     apiBase,
     requestTimeoutMs,
+    apiTimeoutMs,
+    portScanConcurrency,
+    portScanTimeoutMs,
+    autoUpdateEnabled,
+    updateUrl,
     userAgent,
     showResultWindow,
     showResultWindowOnErrorOnly,
@@ -285,26 +313,47 @@ function normalizeServiceConfig(service) {
   };
 }
 
+// GAS 偶發冷啟動/逾時，對 API 呼叫做有限次數重試，避免單次逾時就讓整筆掃描失敗。
+const API_RETRY_ATTEMPTS = 3;
+const API_RETRY_BASE_DELAY_MS = 1200;
+
+async function requestJsonWithRetry(urlString, options) {
+  let lastError;
+  for (let attempt = 1; attempt <= API_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await requestJson(urlString, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt < API_RETRY_ATTEMPTS) {
+        await sleep(API_RETRY_BASE_DELAY_MS * attempt);
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function apiGet(params) {
   const url = new URL(RUNTIME.apiBase);
   Object.entries(params).forEach(([key, value]) => {
     if (value === undefined || value === null) return;
     url.searchParams.set(key, String(value));
   });
-  return requestJson(url.toString(), {
+  return requestJsonWithRetry(url.toString(), {
     method: "GET",
-    headers: { "User-Agent": RUNTIME.userAgent }
+    headers: { "User-Agent": RUNTIME.userAgent },
+    timeoutMs: RUNTIME.apiTimeoutMs
   });
 }
 
 async function apiPost(payload) {
-  return requestJson(RUNTIME.apiBase, {
+  return requestJsonWithRetry(RUNTIME.apiBase, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "User-Agent": RUNTIME.userAgent
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    timeoutMs: RUNTIME.apiTimeoutMs
   });
 }
 
@@ -455,6 +504,28 @@ function scanTcpPort(host, port, timeoutMs) {
       finish("closed", String(error && error.message ? error.message : error));
     }
   });
+}
+
+// 以有上限的併發掃描多個 port，維持結果順序；每個 port 完成時透過 logFn 回報進度。
+async function scanPortsBatch(host, ports, options = {}) {
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : RUNTIME.portScanTimeoutMs;
+  const total = ports.length;
+  const concurrency = Math.max(1, Math.min(Number(options.concurrency) || RUNTIME.portScanConcurrency, total || 1));
+  const tag = String(options.tag || "[PORT_SCAN]");
+  const log = typeof options.log === "function" ? options.log : (msg) => { console.log(msg); };
+  let done = 0;
+
+  const tasks = ports.map((port) => async () => {
+    const result = await scanTcpPort(host, port, timeoutMs);
+    done += 1;
+    const pct = total ? Math.round((done / total) * 100) : 100;
+    const status = String(result.status || "").toUpperCase();
+    const extra = result.status !== "open" && result.error ? ` (${result.error})` : "";
+    await log(`${tag} progress=${done}/${total} (${pct}%) ${host}:${port} ${status}${extra}`);
+    return result;
+  });
+
+  return runLimited(tasks, concurrency);
 }
 
 async function claimSecurityScanSignal() {
@@ -1093,23 +1164,11 @@ async function runPortScanOnce() {
   await upsertProbe({});
 
   const scannedAt = new Date().toISOString();
-  const timeoutMs = Math.max(500, Math.min(RUNTIME.requestTimeoutMs, DEFAULT_PORT_SCAN_TIMEOUT_MS));
-  const results = [];
+  const timeoutMs = RUNTIME.portScanTimeoutMs;
+  const concurrency = RUNTIME.portScanConcurrency;
 
-  console.log(`[PORT_SCAN] device=${deviceName} host=${host} ports=${ports.join(",")}`);
-  for (let index = 0; index < ports.length; index += 1) {
-    const port = ports[index];
-    const progressLabel = `${index + 1}/${ports.length}`;
-    const progressPct = Math.round(((index + 1) / ports.length) * 100);
-    console.log(`[PORT_SCAN] progress=${progressLabel} (${progressPct}%) checking ${host}:${port}`);
-    const result = await scanTcpPort(host, port, timeoutMs);
-    results.push(result);
-    if (result.status === "open") {
-      console.log(`[PORT_SCAN] progress=${progressLabel} (${progressPct}%) ${host}:${port} OPEN`);
-    } else {
-      console.log(`[PORT_SCAN] progress=${progressLabel} (${progressPct}%) ${host}:${port} CLOSED${result.error ? ` (${result.error})` : ""}`);
-    }
-  }
+  console.log(`[PORT_SCAN] device=${deviceName} host=${host} ports=${ports.join(",")} concurrency=${concurrency} timeout=${timeoutMs}ms`);
+  const results = await scanPortsBatch(host, ports, { timeoutMs, concurrency, tag: "[PORT_SCAN]" });
 
   const openPorts = results.filter((item) => item.status === "open").map((item) => item.port);
   const writeResponse = await apiPost({
@@ -1163,7 +1222,8 @@ async function runGlobalPortScan(services, options = {}) {
     return [];
   }
 
-  const timeoutMs = Math.max(500, Math.min(RUNTIME.requestTimeoutMs, DEFAULT_PORT_SCAN_TIMEOUT_MS));
+  const timeoutMs = RUNTIME.portScanTimeoutMs;
+  const concurrency = RUNTIME.portScanConcurrency;
   const hostScanCache = new Map();
   const scanResults = [];
 
@@ -1186,17 +1246,8 @@ async function runGlobalPortScan(services, options = {}) {
     let hostScan = hostScanCache.get(targetHost);
     if (!hostScan) {
       const scannedAt = new Date().toISOString();
-      const hostResults = [];
-      await log(`[PORT_SCAN_AUTO] service=${serviceName} host=${targetHost} ports=${ports.join(",")}`);
-      for (let index = 0; index < ports.length; index += 1) {
-        const port = ports[index];
-        const progressLabel = `${index + 1}/${ports.length}`;
-        const progressPct = Math.round(((index + 1) / ports.length) * 100);
-        await log(`[PORT_SCAN_AUTO] progress=${progressLabel} (${progressPct}%) checking ${targetHost}:${port}`);
-        const result = await scanTcpPort(targetHost, port, timeoutMs);
-        hostResults.push(result);
-        await log(`[PORT_SCAN_AUTO] progress=${progressLabel} (${progressPct}%) ${targetHost}:${port} ${String(result.status || "").toUpperCase()}`);
-      }
+      await log(`[PORT_SCAN_AUTO] service=${serviceName} host=${targetHost} ports=${ports.join(",")} concurrency=${concurrency} timeout=${timeoutMs}ms`);
+      const hostResults = await scanPortsBatch(targetHost, ports, { timeoutMs, concurrency, tag: "[PORT_SCAN_AUTO]", log });
       const openPorts = hostResults.filter((item) => item.status === "open").map((item) => item.port);
       await log(`[PORT_SCAN_AUTO] completed host=${targetHost} open=${openPorts.length}/${ports.length}`);
       hostScan = {
@@ -1547,6 +1598,7 @@ async function runSingleCheckAttempt(url, config) {
 
 function requestText(urlString, options) {
   const opts = options || {};
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : RUNTIME.requestTimeoutMs;
   const target = new URL(urlString);
   const client = target.protocol === "https:" ? https : http;
 
@@ -1574,8 +1626,8 @@ function requestText(urlString, options) {
     });
 
     req.on("error", reject);
-    req.setTimeout(RUNTIME.requestTimeoutMs, () => {
-      req.destroy(new Error(`timeout after ${RUNTIME.requestTimeoutMs} ms`));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`timeout after ${timeoutMs} ms`));
     });
 
     if (opts.body) {
@@ -2275,6 +2327,101 @@ async function runServiceProbe(service) {
   };
 }
 
+// 版本字串格式為可排序的 YYYYMMDD-aNNN，直接以字串比較判斷新舊即可。
+function isVersionNewer(latest, current) {
+  const a = String(latest || "").trim();
+  const b = String(current || "").trim();
+  if (!a || a === b) return false;
+  if (!b) return true;
+  return a > b;
+}
+
+// 下載二進位到檔案，邊寫邊算 SHA-256；支援 3xx 轉址。
+function downloadToFile(url, destPath, timeoutMs, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    const doReq = (current, redirectsLeft) => {
+      let target;
+      try { target = new URL(current); } catch (error) { reject(error); return; }
+      const client = target.protocol === "https:" ? https : http;
+      const req = client.get({
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || undefined,
+        path: `${target.pathname}${target.search}`,
+        headers: { "User-Agent": RUNTIME.userAgent }
+      }, (res) => {
+        const code = Number(res.statusCode || 0);
+        const location = res.headers.location;
+        if (code >= 300 && code < 400 && location) {
+          res.resume();
+          if (redirectsLeft <= 0) { reject(new Error("download redirect limit exceeded")); return; }
+          doReq(String(new URL(location, current)), redirectsLeft - 1);
+          return;
+        }
+        if (code < 200 || code >= 300) {
+          res.resume();
+          reject(new Error(`download failed: HTTP ${code}`));
+          return;
+        }
+        const hash = crypto.createHash("sha256");
+        let bytes = 0;
+        const out = fs.createWriteStream(destPath);
+        res.on("data", (chunk) => { hash.update(chunk); bytes += chunk.length; });
+        res.on("error", reject);
+        out.on("error", reject);
+        res.pipe(out);
+        out.on("finish", () => out.close(() => resolve({ sha256: hash.digest("hex"), bytes })));
+      });
+      req.on("error", reject);
+      req.setTimeout(timeoutMs, () => req.destroy(new Error(`download timeout after ${timeoutMs} ms`)));
+    };
+    doReq(url, maxRedirects);
+  });
+}
+
+// 檢查後端回報的最新版本，若較新則從本機信任來源（RUNTIME.updateUrl）下載並驗證 SHA-256，
+// 暫存為 <exe>.new，交由啟動器（ps1）在沒有 worker 執行時換成正式 exe。非致命，失敗只記錄。
+async function checkAndStageProbeUpdate() {
+  try {
+    if (!RUNTIME.autoUpdateEnabled) return;
+    if (!process.pkg) return;            // 只有打包後的 exe 能自我更新
+    if (!RUNTIME.updateUrl) {
+      console.log("[UPDATE] auto_update_enabled 為 true 但未設定 update_url，略過。");
+      return;
+    }
+
+    const exePath = process.execPath;
+    const stagedPath = `${exePath}.new`;
+    if (fs.existsSync(stagedPath)) {
+      console.log("[UPDATE] 已有待套用的新版本（*.new），等待啟動器套用。");
+      return;
+    }
+
+    const res = await apiGet({ action: "getProbeRelease" });
+    if (!res || !res.ok) return;
+    const release = res.data || {};
+    const latest = String(release.latest_version || "").trim();
+    if (!isVersionNewer(latest, PROBE_SCRIPT_VERSION)) return;
+
+    const tmpPath = `${exePath}.download`;
+    try { fs.unlinkSync(tmpPath); } catch (_) {}
+    console.log(`[UPDATE] 發現新版本 ${latest}（目前 ${PROBE_SCRIPT_VERSION}），自 ${RUNTIME.updateUrl} 下載中...`);
+    const dl = await downloadToFile(RUNTIME.updateUrl, tmpPath, RUNTIME.apiTimeoutMs);
+    const expected = String(release.sha256 || "").trim().toLowerCase();
+    if (expected && expected !== dl.sha256) {
+      try { fs.unlinkSync(tmpPath); } catch (_) {}
+      console.log(`[UPDATE] SHA-256 不符（預期 ${expected}，實得 ${dl.sha256}），已中止更新。`);
+      return;
+    }
+
+    try { fs.unlinkSync(stagedPath); } catch (_) {}
+    fs.renameSync(tmpPath, stagedPath);
+    console.log(`[UPDATE] 已暫存新版本至 ${path.basename(stagedPath)}（${dl.bytes} bytes, sha256=${dl.sha256}）；下次啟動將自動套用。`);
+  } catch (error) {
+    console.log(`[UPDATE] 更新檢查失敗：${error && error.message ? error.message : error}`);
+  }
+}
+
 async function runProbeOnce() {
   const startedAt = new Date().toISOString();
   await upsertProbe({
@@ -2395,6 +2542,9 @@ async function runProbeOnce() {
     errorMessage: runError,
     results
   });
+
+  // 每次完整監控週期結束時檢查一次版本更新（非致命）。
+  await checkAndStageProbeUpdate();
 }
 
 function shouldOpenControlWindow() {

@@ -6,7 +6,10 @@
   "bin": "local-probe.js",
   "scripts": {
     "probe:run": "node local-probe.js",
-    "probe:build:win": "pkg local-probe.js --targets node18-win-x64 --output dist/monitor-local-probe.exe"
+    "probe:build:win": "pkg local-probe.js --targets node18-win-x64 --output dist/monitor-local-probe.exe",
+    "gas:login": "clasp login",
+    "gas:pull": "clasp pull",
+    "gas:push": "clasp push"
   },
   "devDependencies": {
     "pkg": "^5.8.1"
