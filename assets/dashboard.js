@@ -185,7 +185,7 @@ function ensureChartJsLoaded() {
     }
 
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/chart.js';
+    script.src = new URL('./vendor/chart-4.5.1.min.js', import.meta.url).href;
     script.async = true;
     script.dataset.chartjsLoader = 'true';
     script.onload = () => resolve(window.Chart);
