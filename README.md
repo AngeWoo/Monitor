@@ -102,6 +102,21 @@ Control window mode:
 - start the probe from `dist/monitor-local-probe.vbs`
 - do not launch the `.exe` directly; it is the background worker and will show a console window
 
+## Security Scan
+
+`node local-probe.js --security-scan` (or the control window / admin page trigger) scans every enabled, non-local service. The checks live in `security-scanner.js` (loaded by `local-probe.js`; `pkg` bundles it automatically). Results are stored in the existing `security_scans` sheet (`details_json`), so the GAS backend does not need to be redeployed.
+
+Checks (read-only; no PUT/DELETE/POST is ever sent, cookie values are never stored):
+
+- TLS: certificate expiry / hostname / trust chain / key size / SHA-1 signature, and active probing of TLS 1.0 / 1.1 / 1.2 / 1.3 support
+- HTTP headers: HSTS (and max-age), CSP (and `unsafe-inline` / wildcard quality), X-Frame-Options (or CSP `frame-ancestors`), nosniff, Referrer-Policy, Permissions-Policy, version leaks
+- Sensitive paths (~30, e.g. `/.env`, `/.git/config`, backups, phpinfo, actuator, directory listing): a hit only counts when the response **looks like that file** and differs from a random non-existent path, so SPA catch-all pages (always 200) and login redirects are not reported
+- Cookie flags, HTTP→HTTPS redirect, CORS reflection, TRACE, mixed content
+
+Scoring: `100 − (critical×25 + high×12 + medium×5 + low×2)`. Grade: any critical or score < 40 → F; 2+ high or < 60 → D; 1 high or < 75 → C; < 90 → B; otherwise A. Each result also records the previous grade/score and which issues are new or fixed. The dashboard and admin pages show it, and the dashboard can export all findings as CSV.
+
+After changing `local-probe.js` / `security-scanner.js`, rebuild and redistribute the probe (`npm install` once, then `npm run probe:build:win`); old probes keep writing the old result format, which the UI labels as "legacy".
+
 ## Build EXE
 
 ```bash

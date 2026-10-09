@@ -6,9 +6,10 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const securityScanner = require("./security-scanner.js");
 const { spawnSync } = require("child_process");
 
-const PROBE_SCRIPT_VERSION = "20260530-a001";
+const PROBE_SCRIPT_VERSION = "20261010-s001";
 const DEFAULT_API_BASE = "https://script.google.com/macros/s/AKfycbxPm5VWcnXe5b2u6oi1gqLIBCjK6raQtI-4ya1Gd1umDUEYhBGSOHpq9XBS9zZ7iBCq/exec";
 const DEFAULT_API_REDIRECTS = 5;
 const DEFAULT_CONTROL_INTERVAL_SEC = 60;
@@ -566,207 +567,7 @@ async function completeSecurityScanSignal(requestId, payload) {
 }
 
 // ─── Security Scan ───────────────────────────────────────────────────────────
-
-const SECURITY_HEADERS_CHECKLIST = [
-  { header: "strict-transport-security", label: "HSTS", severity: "high", description: "HTTP Strict Transport Security 未設定，瀏覽器可能透過 HTTP 明文連線" },
-  { header: "x-frame-options", label: "X-Frame-Options", severity: "medium", description: "未設定 X-Frame-Options，可能受到 Clickjacking 攻擊" },
-  { header: "x-content-type-options", label: "X-Content-Type-Options", severity: "medium", description: "未設定 nosniff，瀏覽器可能錯誤解析 MIME 類型" },
-  { header: "content-security-policy", label: "CSP", severity: "medium", description: "未設定 Content-Security-Policy，可能受到 XSS 攻擊" },
-  { header: "x-xss-protection", label: "X-XSS-Protection", severity: "low", description: "未設定 X-XSS-Protection（舊版瀏覽器 XSS 防護）" },
-  { header: "referrer-policy", label: "Referrer-Policy", severity: "low", description: "未設定 Referrer-Policy，可能洩漏敏感 URL 資訊" },
-  { header: "permissions-policy", label: "Permissions-Policy", severity: "low", description: "未設定 Permissions-Policy，未限制瀏覽器功能存取權限" }
-];
-
-const SENSITIVE_PATHS = [
-  { path: "/.env", label: ".env 環境變數檔", severity: "critical" },
-  { path: "/.git/config", label: "Git 配置檔", severity: "critical" },
-  { path: "/wp-admin/", label: "WordPress 後台", severity: "high" },
-  { path: "/phpmyadmin/", label: "phpMyAdmin", severity: "high" },
-  { path: "/admin/", label: "管理後台", severity: "medium" },
-  { path: "/server-status", label: "Apache Server Status", severity: "medium" },
-  { path: "/server-info", label: "Apache Server Info", severity: "medium" },
-  { path: "/.htaccess", label: ".htaccess 配置檔", severity: "medium" },
-  { path: "/web.config", label: "IIS web.config", severity: "medium" },
-  { path: "/robots.txt", label: "robots.txt", severity: "info" },
-  { path: "/.well-known/security.txt", label: "security.txt", severity: "info" }
-];
-
-const WEAK_TLS_PROTOCOLS = ["TLSv1", "TLSv1.1"];
-
-function checkTlsCertificate(host, port, timeoutMs) {
-  return new Promise((resolve) => {
-    const result = {
-      ok: false,
-      protocol: "",
-      cipher: "",
-      cert_subject: "",
-      cert_issuer: "",
-      cert_valid_from: "",
-      cert_valid_to: "",
-      cert_days_remaining: -1,
-      cert_expired: false,
-      cert_self_signed: false,
-      sni_match: true,
-      errors: []
-    };
-
-    const socket = tls.connect({
-      host,
-      port: port || 443,
-      servername: host,
-      rejectUnauthorized: false,
-      timeout: timeoutMs || 10000
-    }, () => {
-      try {
-        result.ok = true;
-        result.protocol = socket.getProtocol ? socket.getProtocol() : "";
-        const cipher = socket.getCipher ? socket.getCipher() : {};
-        result.cipher = cipher.name || "";
-
-        const cert = socket.getPeerCertificate ? socket.getPeerCertificate() : {};
-        if (cert && cert.subject) {
-          result.cert_subject = cert.subject.CN || "";
-          result.cert_issuer = (cert.issuer && cert.issuer.CN) || "";
-          result.cert_valid_from = cert.valid_from || "";
-          result.cert_valid_to = cert.valid_to || "";
-
-          if (cert.valid_to) {
-            const expiry = new Date(cert.valid_to);
-            const now = new Date();
-            const daysRemaining = Math.floor((expiry - now) / (1000 * 60 * 60 * 24));
-            result.cert_days_remaining = daysRemaining;
-            result.cert_expired = daysRemaining < 0;
-          }
-
-          if (cert.issuer && cert.subject &&
-              cert.issuer.CN === cert.subject.CN &&
-              cert.issuer.O === cert.subject.O) {
-            result.cert_self_signed = true;
-          }
-
-          if (!socket.authorized) {
-            const authError = socket.authorizationError || "";
-            result.errors.push(authError);
-            if (/hostname|mismatch/i.test(authError)) {
-              result.sni_match = false;
-            }
-          }
-        }
-      } catch (e) {
-        result.errors.push(String(e.message || e));
-      }
-      socket.destroy();
-      resolve(result);
-    });
-
-    socket.on("error", (err) => {
-      result.errors.push(String(err.message || err));
-      socket.destroy();
-      resolve(result);
-    });
-
-    socket.setTimeout(timeoutMs || 10000, () => {
-      result.errors.push("TLS handshake timeout");
-      socket.destroy();
-      resolve(result);
-    });
-  });
-}
-
-async function checkSecurityHeaders(url, timeoutMs) {
-  const findings = [];
-  try {
-    const response = await requestText(url, {
-      method: "GET",
-      headers: { "User-Agent": RUNTIME.userAgent }
-    });
-    const headers = response.headers || {};
-
-    for (const check of SECURITY_HEADERS_CHECKLIST) {
-      const value = String(headers[check.header] || "").trim();
-      findings.push({
-        check: check.label,
-        header: check.header,
-        present: !!value,
-        value: value || "",
-        severity: value ? "pass" : check.severity,
-        description: value ? `已設定: ${value}` : check.description
-      });
-    }
-
-    const serverHeader = String(headers["server"] || "").trim();
-    if (serverHeader) {
-      const hasVersion = /\/[\d.]+/.test(serverHeader);
-      findings.push({
-        check: "Server Header",
-        header: "server",
-        present: true,
-        value: serverHeader,
-        severity: hasVersion ? "medium" : "info",
-        description: hasVersion
-          ? `Server header 暴露版本資訊: ${serverHeader}`
-          : `Server header: ${serverHeader}`
-      });
-    }
-
-    const poweredBy = String(headers["x-powered-by"] || "").trim();
-    if (poweredBy) {
-      findings.push({
-        check: "X-Powered-By",
-        header: "x-powered-by",
-        present: true,
-        value: poweredBy,
-        severity: "medium",
-        description: `X-Powered-By 暴露技術棧: ${poweredBy}，建議移除`
-      });
-    }
-  } catch (error) {
-    findings.push({
-      check: "HTTP_REQUEST",
-      header: "",
-      present: false,
-      value: "",
-      severity: "error",
-      description: `無法連線檢查: ${error.message || error}`
-    });
-  }
-  return findings;
-}
-
-async function checkSensitivePaths(baseUrl, timeoutMs) {
-  const base = baseUrl.replace(/\/+$/, "");
-  return Promise.all(SENSITIVE_PATHS.map(async (item) => {
-    const targetUrl = base + item.path;
-    try {
-      const response = await requestText(targetUrl, {
-        method: "GET",
-        headers: { "User-Agent": RUNTIME.userAgent }
-      });
-      const code = Number(response.statusCode || 0);
-      const bodyLen = String(response.bodyText || "").length;
-      const accessible = code >= 200 && code < 400 && bodyLen > 0;
-      if (accessible) {
-        return {
-          path: item.path, label: item.label, status_code: code,
-          accessible: true, severity: item.severity, body_length: bodyLen,
-          description: `${item.label} 可公開存取 (HTTP ${code})，建議限制存取`
-        };
-      } else {
-        return {
-          path: item.path, label: item.label, status_code: code,
-          accessible: false, severity: "pass", body_length: 0,
-          description: `${item.label} 已保護 (HTTP ${code})`
-        };
-      }
-    } catch (error) {
-      return {
-        path: item.path, label: item.label, status_code: 0,
-        accessible: false, severity: "pass", body_length: 0,
-        description: `${item.label} 無法存取: ${error.message || error}`
-      };
-    }
-  }));
-}
+// 檢查邏輯（標頭、敏感路徑、TLS、Cookie、CORS…）已搬到 security-scanner.js，這裡只負責串接探針設定。
 
 // Run up to `limit` async tasks concurrently, preserving result order
 async function runLimited(tasks, limit) {
@@ -782,99 +583,35 @@ async function runLimited(tasks, limit) {
   return results;
 }
 
-async function runSecurityScanForService(service, logFn) {
+async function runSecurityScanForService(service, logFn, previous) {
   const log = typeof logFn === "function" ? logFn : async (msg) => console.log(msg);
-  const url = String(service.url || "").trim();
-  const secondaryUrl = String(service.secondary_url || "").trim();
-  const targetUrl = secondaryUrl || url;
-  if (!targetUrl) {
-    return { ok: false, service_id: service.id, service_name: service.name, error: "No URL" };
+  return securityScanner.scanService(service, {
+    userAgent: RUNTIME.userAgent,
+    timeoutMs: RUNTIME.requestTimeoutMs,
+    pathTimeoutMs: Math.min(RUNTIME.requestTimeoutMs, 10000),
+    previous: previous || null,
+    log
+  });
+}
+
+// 讀取上次掃描結果，用來比較等級升降與新增/已修復的問題
+async function loadPreviousSecurityScans() {
+  try {
+    const response = await apiGet({ action: "listSecurityScans" });
+    if (!response || !response.ok) return new Map();
+    const byService = new Map();
+    (response.data || []).forEach((row) => {
+      const serviceId = String(row.service_id || "").trim();
+      if (!serviceId) return;
+      const sameProbe = String(row.probe_id || "").trim() === RUNTIME.probeId;
+      const existing = byService.get(serviceId);
+      // 同一個 service 有多個 probe 的資料時，優先拿自己這台的
+      if (!existing || sameProbe) byService.set(serviceId, row);
+    });
+    return byService;
+  } catch (_) {
+    return new Map();
   }
-
-  const scannedAt = new Date().toISOString();
-  let parsedUrl;
-  try { parsedUrl = new URL(targetUrl); } catch (_) {
-    return { ok: false, service_id: service.id, service_name: service.name, error: "Invalid URL" };
-  }
-
-  const isHttps = parsedUrl.protocol === "https:";
-  const host = parsedUrl.hostname;
-  const port = parsedUrl.port || (isHttps ? 443 : 80);
-
-  await log(`[SECURITY_SCAN] service=${service.name || service.id} url=${targetUrl}`);
-
-  // TLS + headers + paths 並行執行
-  const [tlsResult, headerFindings, pathFindings] = await Promise.all([
-    isHttps
-      ? checkTlsCertificate(host, Number(port), RUNTIME.requestTimeoutMs)
-      : Promise.resolve(null),
-    checkSecurityHeaders(targetUrl, RUNTIME.requestTimeoutMs),
-    checkSensitivePaths(targetUrl, RUNTIME.requestTimeoutMs)
-  ]);
-
-  // Compute summary score
-  const allFindings = [...headerFindings, ...pathFindings];
-  const criticalCount = allFindings.filter((f) => f.severity === "critical").length;
-  const highCount = allFindings.filter((f) => f.severity === "high").length;
-  const mediumCount = allFindings.filter((f) => f.severity === "medium").length;
-  const lowCount = allFindings.filter((f) => f.severity === "low").length;
-  const passCount = allFindings.filter((f) => f.severity === "pass").length;
-
-  let tlsSeverity = "pass";
-  if (tlsResult) {
-    if (tlsResult.cert_expired) tlsSeverity = "critical";
-    else if (tlsResult.cert_self_signed) tlsSeverity = "high";
-    else if (tlsResult.cert_days_remaining >= 0 && tlsResult.cert_days_remaining <= 30) tlsSeverity = "high";
-    else if (tlsResult.cert_days_remaining > 30 && tlsResult.cert_days_remaining <= 90) tlsSeverity = "medium";
-    else if (!tlsResult.sni_match) tlsSeverity = "high";
-    else if (WEAK_TLS_PROTOCOLS.includes(tlsResult.protocol)) tlsSeverity = "high";
-  } else if (isHttps) {
-    tlsSeverity = "error";
-  }
-
-  const totalIssues = criticalCount + highCount + mediumCount + lowCount + (tlsSeverity !== "pass" && tlsSeverity !== "error" ? 1 : 0);
-  let grade = "A";
-  if (criticalCount > 0) grade = "F";
-  else if (highCount > 0 || tlsSeverity === "critical" || tlsSeverity === "high") grade = "D";
-  else if (mediumCount > 2) grade = "C";
-  else if (mediumCount > 0) grade = "B";
-  else if (lowCount > 2) grade = "B";
-
-  const result = {
-    ok: true,
-    service_id: String(service.id || "").trim(),
-    service_name: String(service.name || service.url || "").trim(),
-    url: targetUrl,
-    host,
-    scanned_at: scannedAt,
-    grade,
-    total_issues: totalIssues,
-    critical_count: criticalCount,
-    high_count: highCount,
-    medium_count: mediumCount,
-    low_count: lowCount,
-    pass_count: passCount,
-    is_https: isHttps,
-    tls: tlsResult ? {
-      protocol: tlsResult.protocol,
-      cipher: tlsResult.cipher,
-      cert_subject: tlsResult.cert_subject,
-      cert_issuer: tlsResult.cert_issuer,
-      cert_valid_from: tlsResult.cert_valid_from,
-      cert_valid_to: tlsResult.cert_valid_to,
-      cert_days_remaining: tlsResult.cert_days_remaining,
-      cert_expired: tlsResult.cert_expired,
-      cert_self_signed: tlsResult.cert_self_signed,
-      sni_match: tlsResult.sni_match,
-      severity: tlsSeverity,
-      errors: tlsResult.errors || []
-    } : null,
-    headers: headerFindings,
-    paths: pathFindings
-  };
-
-  await log(`[SECURITY_SCAN] service=${service.name || service.id} grade=${grade} issues=${totalIssues} (critical=${criticalCount} high=${highCount} medium=${mediumCount} low=${lowCount})`);
-  return result;
 }
 
 async function runClaimedSecurityScanSession(session) {
@@ -986,6 +723,7 @@ async function runSecurityScanOnce(options = {}) {
     }
   }
 
+  const previousScans = await loadPreviousSecurityScans();
   const SCAN_CONCURRENCY = 2;
   await log(`[SECURITY_SCAN] starting scan for ${services.length} service(s), concurrency=${SCAN_CONCURRENCY}`);
   const writeErrors = [];
@@ -993,7 +731,7 @@ async function runSecurityScanOnce(options = {}) {
   const scanTasks = services.map((service) => async () => {
     let result;
     try {
-      result = await runSecurityScanForService(service, log);
+      result = await runSecurityScanForService(service, log, securityScanner.previousFromRow(previousScans.get(String(service.id || "").trim())));
     } catch (error) {
       result = {
         ok: false,
@@ -1020,11 +758,7 @@ async function runSecurityScanOnce(options = {}) {
         low_count: result.low_count,
         pass_count: result.pass_count,
         is_https: result.is_https,
-        details_json: stringifySecurityScanDetails({
-          tls: result.tls,
-          headers: result.headers,
-          paths: result.paths
-        })
+        details_json: stringifySecurityScanDetails(securityScanner.toDetails(result))
       };
       const summaryPayload = {
         ...fullPayload,
@@ -1111,7 +845,7 @@ async function runSecurityScanOnce(options = {}) {
       service: r.service_name || r.service_id,
       status: r.ok ? (r.grade === "F" || r.grade === "D" ? "WARN" : "OK") : "ERROR",
       httpCode: 0,
-      error: r.ok ? `Grade ${r.grade} | Issues: ${r.total_issues}` : (r.error || "")
+      error: r.ok ? `Grade ${r.grade} (${r.score}) | Issues: ${r.total_issues}` : (r.error || "")
     }))
   });
 }
