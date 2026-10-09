@@ -1,4 +1,5 @@
 ﻿import { apiGet, apiPost, safeText, escapeHtml as escapeHtmlText, loadHostBadge, fmtDate, serviceCheckModeBadge, serviceCheckModeDetail } from './common.js?v=20260315-a041';
+import { securityGradeCell, renderSecurityReport } from './security-report.js?v=20261010-s001';
 
 const addForm = document.getElementById('addForm');
 const addMessage = document.getElementById('addMessage');
@@ -524,8 +525,6 @@ function renderAdminSecurityScans(scans) {
   adminSecurityScansBody.innerHTML = scans.map((scan) => {
     const name = escapeHtmlText(safeText(scan.service_name || scan.service_id || '-'));
     const host = escapeHtmlText(safeText(scan.host || '-'));
-    const grade = String(scan.grade || '-').toUpperCase();
-    const gradeColor = grade === 'A' ? '#22c55e' : grade === 'B' ? '#84cc16' : grade === 'C' ? '#eab308' : grade === 'D' ? '#f97316' : grade === 'F' ? '#ef4444' : '#94a3b8';
     const isHttps = scan.is_https ? '✓' : '✗';
     const httpsStyle = scan.is_https ? 'color:#22c55e' : 'color:#ef4444';
     const scannedAt = fmtDate(scan.scanned_at);
@@ -535,7 +534,7 @@ function renderAdminSecurityScans(scans) {
       <tr>
         <td data-label="服務名稱">${name}</td>
         <td data-label="Host">${host}</td>
-        <td data-label="等級"><span style="background:${gradeColor};color:#fff;padding:2px 10px;border-radius:4px;font-weight:700">${escapeHtmlText(grade)}</span></td>
+        <td data-label="等級">${securityGradeCell(scan)}</td>
         <td data-label="問題數">${Number(scan.total_issues || 0)}</td>
         <td data-label="HTTPS"><span style="${httpsStyle};font-weight:600">${isHttps}</span></td>
         <td data-label="掃描時間">${escapeHtmlText(scannedAt)}</td>
@@ -558,114 +557,9 @@ function setSecDetailModalVisible(show) {
 
 function showSecurityScanDetail(scan) {
   if (!scan) return;
-  const grade = String(scan.grade || '-').toUpperCase();
-  const gradeColor = grade === 'A' ? '#22c55e' : grade === 'B' ? '#84cc16' : grade === 'C' ? '#eab308' : grade === 'D' ? '#f97316' : grade === 'F' ? '#ef4444' : '#94a3b8';
   if (secDetailTitle) secDetailTitle.textContent = `安全性掃描詳情 — ${safeText(scan.service_name || scan.service_id || '-')}`;
   if (secDetailSubtitle) secDetailSubtitle.textContent = `${safeText(scan.host || scan.url || '')}  掃描時間: ${fmtDate(scan.scanned_at)}`;
-
-  let details = null;
-  try { details = JSON.parse(scan.details_json || 'null'); } catch (_) {}
-
-  const sevColor = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e', pass: '#94a3b8', info: '#3b82f6', error: '#ef4444' };
-  const sevLabel = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', pass: 'Pass', info: 'Info', error: 'Error' };
-
-  // 摘要 stat 卡
-  const statsHtml = `
-    <div class="service-modal-summary-grid">
-      <div class="service-modal-stat">
-        <span class="service-modal-stat-label">評級</span>
-        <span class="service-modal-stat-value" style="font-size:1.6rem;font-weight:700;color:${gradeColor}">${escapeHtmlText(grade)}</span>
-      </div>
-      <div class="service-modal-stat">
-        <span class="service-modal-stat-label">HTTPS</span>
-        <span class="service-modal-stat-value" style="color:${scan.is_https ? '#22c55e' : '#ef4444'};font-weight:700">${scan.is_https ? '✓ 是' : '✗ 否'}</span>
-      </div>
-      <div class="service-modal-stat">
-        <span class="service-modal-stat-label">問題總數</span>
-        <span class="service-modal-stat-value" style="font-weight:700">${Number(scan.total_issues || 0)}</span>
-        <span class="service-modal-stat-detail">Critical ${scan.critical_count || 0} / High ${scan.high_count || 0} / Medium ${scan.medium_count || 0} / Low ${scan.low_count || 0}</span>
-      </div>
-      <div class="service-modal-stat">
-        <span class="service-modal-stat-label">通過項目</span>
-        <span class="service-modal-stat-value" style="color:#22c55e;font-weight:700">${scan.pass_count || 0}</span>
-      </div>
-    </div>`;
-
-  // TLS 區塊
-  let tlsHtml = '';
-  if (details && details.tls) {
-    const tls = details.tls;
-    const tlsColor = sevColor[tls.severity] || '#555';
-    const expiredStyle = tls.cert_expired ? 'color:#ef4444;font-weight:700' : '';
-    tlsHtml = `
-      <div class="service-modal-section">
-        <div class="service-modal-section-head">
-          <h3>🔒 SSL / TLS 憑證</h3>
-          <span class="service-modal-chip" style="color:${tlsColor}">${sevLabel[tls.severity] || tls.severity || '-'}</span>
-        </div>
-        <div class="service-modal-meta-grid">
-          <div class="service-modal-meta-item"><span class="service-modal-meta-label">Protocol</span><span class="service-modal-meta-value" style="color:${tlsColor};font-weight:700">${escapeHtmlText(tls.protocol || '-')}</span></div>
-          <div class="service-modal-meta-item"><span class="service-modal-meta-label">Cipher</span><span class="service-modal-meta-value">${escapeHtmlText(tls.cipher || '-')}</span></div>
-          <div class="service-modal-meta-item"><span class="service-modal-meta-label">憑證主體 (Subject)</span><span class="service-modal-meta-value">${escapeHtmlText(tls.cert_subject || '-')}</span></div>
-          <div class="service-modal-meta-item"><span class="service-modal-meta-label">頒發者 (Issuer)</span><span class="service-modal-meta-value">${escapeHtmlText(tls.cert_issuer || '-')}</span></div>
-          <div class="service-modal-meta-item"><span class="service-modal-meta-label">有效期至</span><span class="service-modal-meta-value" style="${expiredStyle}">${escapeHtmlText(String(tls.cert_valid_to || '-'))} ${tls.cert_days_remaining !== undefined ? `(${tls.cert_days_remaining} 天)` : ''}</span></div>
-          <div class="service-modal-meta-item"><span class="service-modal-meta-label">自簽憑證</span><span class="service-modal-meta-value" style="${tls.cert_self_signed ? 'color:#f97316' : 'color:#22c55e'}">${tls.cert_self_signed ? '⚠ 是' : '✓ 否'}</span></div>
-        </div>
-      </div>`;
-  }
-
-  // Security Headers 區塊
-  let headersHtml = '';
-  if (details && details.headers && details.headers.length) {
-    const rows = details.headers.map((h) => {
-      const sev = String(h.severity || 'pass').toLowerCase();
-      const color = sevColor[sev] || '#555';
-      const lbl = sevLabel[sev] || sev;
-      return `<tr>
-        <td>${escapeHtmlText(h.check || h.header || '-')}</td>
-        <td><span style="color:${color};font-weight:600">${lbl}</span></td>
-        <td>${escapeHtmlText(h.description || (h.present ? h.value : '-'))}</td>
-      </tr>`;
-    }).join('');
-    headersHtml = `
-      <div class="service-modal-section">
-        <h3>📋 Security Headers</h3>
-        <div class="service-modal-table-wrap">
-          <table class="service-modal-table">
-            <thead><tr><th>Header</th><th>結果</th><th>說明</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-      </div>`;
-  }
-
-  // Sensitive Paths 區塊
-  let pathsHtml = '';
-  if (details && details.paths && details.paths.length) {
-    const rows = details.paths.map((p) => {
-      const sev = String(p.severity || 'pass').toLowerCase();
-      const color = sev === 'pass' ? '#22c55e' : (sevColor[sev] || '#555');
-      const lbl = sev === 'pass' ? '✓ 安全' : `⚠ ${sevLabel[sev] || sev}`;
-      return `<tr>
-        <td>${escapeHtmlText(p.label || p.path || '-')}</td>
-        <td style="font-family:monospace">${p.status_code || '-'}</td>
-        <td style="color:${color};font-weight:600">${lbl}</td>
-        <td>${escapeHtmlText(p.description || '-')}</td>
-      </tr>`;
-    }).join('');
-    pathsHtml = `
-      <div class="service-modal-section">
-        <h3>🔎 敏感路徑</h3>
-        <div class="service-modal-table-wrap">
-          <table class="service-modal-table">
-            <thead><tr><th>路徑</th><th>HTTP</th><th>狀態</th><th>說明</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-      </div>`;
-  }
-
-  if (secDetailBody) secDetailBody.innerHTML = statsHtml + tlsHtml + headersHtml + pathsHtml;
+  if (secDetailBody) secDetailBody.innerHTML = renderSecurityReport(scan);
   setSecDetailModalVisible(true);
 }
 
